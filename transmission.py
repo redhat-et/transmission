@@ -20,12 +20,15 @@ DEFAULT_CONFIGSET_DIR = "/var/opt/transmission/configsets"
 
 DEFAULT_ROOT_DIR = "/"
 
+DEFAULT_SYSTEMD_DIR = "/etc/systemd/system"
+
 ALLOWED_STEPS = [
     "update-banner",
     "create-users",
     "stage-files",
     "update-configsets",
-    "sync-root"
+    "sync-root",
+    "update-systemd-units",
 ]
 
 
@@ -111,8 +114,7 @@ def run_command(args):
     return result.returncode, result.stdout, result.stderr
 
 
-def ensure_dir_exists(filepath, mode=0o755):
-    dirpath = os.path.dirname(filepath)
+def ensure_dir_exists(dirpath, mode=0o755):
     if not os.path.exists(dirpath):
         os.makedirs(dirpath, exist_ok=True)
         os.chmod(dirpath, mode)
@@ -204,7 +206,7 @@ fetchers = {
 def fetch(dest, url):
     scheme = url.split(':')[0]
     if scheme in fetchers:
-        ensure_dir_exists(dest)
+        ensure_dir_exists(os.path.dirname(dest))
         fetchers[scheme](dest, url)
     else:
         print(f"  fetch: unkown scheme {scheme} --> skipping!")
@@ -327,16 +329,12 @@ def stage_file(f, configset_dir):
 
     target_hash = f.get("contents", {}).get("verification", {}).get("hash", "")
 
-    # hack until DM removes base64 encoding
-    # if target_hash and not (target_hash.startswith("sha256") or target_hash.startswith("sha512")):
-    #     target_hash=""
-
     print(f"staging {target_path} ({abbrev_hash(target_hash)}):")
 
     dest = configset_dir + '/staging/' + target_path
     if is_staged(dest, target_hash):
         print(f"  already staged (skipping)")
-        return False, False
+        return False, None
 
     url = f.get("contents", {}).get("source", "")
     fetch(dest, url)
@@ -350,22 +348,42 @@ def stage_file(f, configset_dir):
         actual_hash = compute_hash(dest, target_hash)
         if actual_hash != target_hash:
             print(f"  hash mismatch ({actual_hash} != {target_hash})")
-            return True, True
+            return True, None
         else:
             print(f"  hash matches")
+    return False, target_path
 
 
-    return False, True
+def stage_systemd_unit(u, configset_dir):
+    ensure_dir_exists(configset_dir + '/staging' + DEFAULT_SYSTEMD_DIR)
+    unitname = u.get("name", "unnamed.unit")
+    unitfile = configset_dir + '/staging' + DEFAULT_SYSTEMD_DIR + "/" + unitname
+    with open(unitfile, 'w') as f:
+        f.write(u.get("contents", ""))
+
+    for d in u.get("dropins", []):
+        ensure_dir_exists(unitfile + ".d")
+        dropinname = d.get("name", "unnamed-dropin.conf")
+        dropinfile = unitfile + ".d/" + dropinname
+        with open(dropinfile, 'w') as f:
+            f.write(d.get("contents", ""))
+
+    return {unitname: u.get("enabled")}
 
 
 def stage_files(ignition, configset_dir):
-    staging_failed = False
-    staging_had_updates = False
+    errors = False
+    changed_files = []
+    changed_systemd_units = {}
     for f in ignition.get("storage", {}).get("files", []):
-        failed, updated = stage_file(f, configset_dir)
-        staging_failed |= failed
-        staging_had_updates |= updated
-    return staging_failed, staging_had_updates
+        error, changed_file = stage_file(f, configset_dir)
+        errors |= error
+        if changed_file:
+            changed_files.append(changed_file)
+    for u in ignition.get("systemd", {}).get("units", []):
+        changed_systemd_unit = stage_systemd_unit(u, configset_dir)
+        changed_systemd_units.update(changed_systemd_unit)
+    return errors, changed_files, changed_systemd_units
 
 
 # -------------------- applying configuration sets --------------------
@@ -413,7 +431,7 @@ def files_to_sync(source):
 def sync_configset(source, dest, relabel=False):
     for f in files_to_sync(source):
         print(f"syncing {source + f} to {dest + f}")
-        ensure_dir_exists(dest + f)
+        ensure_dir_exists(os.path.dirname(dest + f))
         hardlink_replacing(source + f, dest + f)
         if relabel:
             run_command(["restorecon", dest + f])
@@ -433,6 +451,20 @@ def update_configset(configset_dir, root_dir, sync_root=True):
         sync_configset(configset_dir + "/current", root_dir, relabel=False)
 
     run_command(["rm", "-rf", configset_dir + "/lastlast"])
+
+
+# -------------------- applying configuration sets --------------------
+
+def update_systemd_units(units):
+    run_command(["systemctl", "daemon-reload"])
+    for unit, enabled in units.items():
+        if enabled is None: # Ignition defines 'None' as "no change"
+            continue
+        if enabled:
+            run_command(["systemctl", "enable", unit])
+        else:
+            run_command(["systemctl", "disable", unit])
+    return
 
 
 # -------------------- banner updates --------------------
@@ -476,22 +508,29 @@ def main(args: argparse.Namespace):
         if "create-users" == args.stop_after_step:
             return
 
-    staging_had_updates = False
+    changed_files = []
+    changed_systemd_units = {}
     if "stage-files" not in args.steps_to_skip:
-        staging_failed, staging_had_updates = stage_files(
+        errors, changed_files, changed_systemd_units = stage_files(
             ignition, args.configset_dir)
-        if staging_failed:
+        if errors:
             print("One or more files couldn't be staged, exiting", file=sys.stderr)
             return
         if "stage-files" == args.stop_after_step:
             return
 
     if  "update-configsets" not in args.steps_to_skip:
-        if staging_had_updates:
+        if changed_files or changed_systemd_units:
             sync_root = ("sync-root" not in args.steps_to_skip)
             update_configset(
                 args.configset_dir, args.root_dir, sync_root)
         if "update-configsets" == args.stop_after_step:
+            return
+
+    if  "update-systemd-units" not in args.steps_to_skip:
+        if changed_systemd_units:
+            update_systemd_units(changed_systemd_units)
+        if "update-systemd-units" == args.stop_after_step:
             return
 
 
