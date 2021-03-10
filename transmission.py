@@ -578,7 +578,10 @@ def get_args(argv: List[str]) -> argparse.Namespace:
         default=DEFAULT_ROOT_DIR,
     )
 
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.steps_to_skip is None:
+        args.steps_to_skip = []
+    return args
 
 
 if __name__ == "__main__":
