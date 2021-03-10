@@ -9,23 +9,177 @@ import hashlib
 import json
 import os
 import platform
+import pwd
 import shutil
+import stat
+import subprocess
 import sys
 import urllib.request
 
-DEFAULT_TRANSMISSION_URL = "http://device-management.redhat.edge-lab.net"
-MACHINE_ID = "14:7d:da:9b:80:bd"
-ACTIVE_DIR = "/Users/fzdarsky/Development/transmission/target/active"
-STAGING_DIR = "/Users/fzdarsky/Development/transmission/target/staging"
+DEFAULT_CONFIGSET_DIR = "/var/opt/transmission/configsets"
+
+DEFAULT_ROOT_DIR = "/"
+
+ALLOWED_STEPS = [
+    "update-banner",
+    "create-users",
+    "stage-files",
+    "update-configsets",
+    "sync-root"
+]
+
+
+# -------------------- device ID and Transmission URL --------------------
+# shamelessly plucked from https://github.com/fedora-iot/zezere/blob/main/zezere_ignition/__init__.py
+
+def get_primary_interface() -> Optional[str]:
+    mask_to_iface = {}
+
+    with open("/proc/net/route", "r") as routefile:
+        for line in routefile.readlines():
+            if not line.strip():
+                # Pass over empty lines
+                continue
+            split = line.split()
+            interface = split[0]
+            mask = split[7]
+            if split[0] == "Iface":
+                # Pass over the file header
+                continue
+            mask_to_iface[mask] = interface
+
+    # If there are no routes at all, just exit
+    if len(mask_to_iface) == 0:
+        # No routes at all
+        return None
+    # Determine the smallest mask in the table.
+    # This will default to the default route, or go further down
+    return mask_to_iface[min(mask_to_iface, key=lambda x: int(x, 16))]
+
+
+def get_interface_mac(interface: Optional[str]) -> str:
+    if interface is None:
+        return None
+    with open("/sys/class/net/%s/address" % interface, "r") as addrfile:
+        return addrfile.read().strip()
+
+
+def get_device_id():
+    return get_interface_mac(get_primary_interface())
+
+
+def get_transmission_url_cmdline() -> Optional[str]:
+    cmdline = None
+    with open("/proc/cmdline", "r") as cmdlinefile:
+        cmdline = cmdlinefile.read().strip()
+    for arg in cmdline.split(" "):
+        args = arg.split("=", 2)
+        if len(args) != 2:
+            continue
+        key, val = args
+        if key == "transmission.url" or key == "zezere.url":
+            return val.strip()
 
 
 def get_transmission_url():
-    return DEFAULT_TRANSMISSION_URL
+    cmdline_url = get_transmission_url_cmdline()
+    if cmdline_url is not None:
+        return cmdline_url
+
+    paths = [
+        "/usr/lib/transmission-url",
+        "/etc/transmission-url",
+        "./transmission-url",
+    ]
+    for path in paths:
+        if os.path.exists(path):
+            with open(path, "r") as urlfile:
+                return urlfile.read().strip()
 
 
-def get_machine_id():
-    return MACHINE_ID
+# -------------------- helpers --------------------
 
+def run_command(args):
+    print(f"running command {args}")
+    result = subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        env=os.environ.copy()
+    )
+    print(f"  return code: {result.returncode}\n  stdout: '{result.stdout}'\n  stderr: '{result.stderr}'")
+    return result.returncode, result.stdout, result.stderr
+
+
+def ensure_dir_exists(filepath, mode=0o755):
+    dirpath = os.path.dirname(filepath)
+    if not os.path.exists(dirpath):
+        os.makedirs(dirpath, exist_ok=True)
+        os.chmod(dirpath, mode)
+
+
+def hardlink_replacing(source, dest):
+    if os.path.exists(dest):
+        if os.lstat(source)[stat.ST_INO] == os.lstat(dest)[stat.ST_INO]:
+            return # already hardlinked, nothing to do
+        else:
+            os.remove(dest) # delete existing file
+    run_command(["ln", source, dest])
+
+
+def get_ignition(url):
+    print(f"Requesting from {url}")
+    with urllib.request.urlopen(url) as f:
+        return json.loads(f.read().decode())
+
+
+# -------------------- adding users --------------------
+
+def user_exists(name):
+    try:
+        pwd.getpwnam(name)
+        return True
+    except KeyError:
+        return False
+
+
+def get_user_home(name):
+    try:
+        return pwd.getpwnam(name).pw_dir
+    except KeyError:
+        return None
+
+
+def create_users(ignition):
+    for u in ignition.get("passwd", {}).get("users", []):
+        name = u.get("name")
+        if not user_exists(name):
+            print(f"create user {name}")
+            cmd = [
+                "/usr/sbin/useradd",
+                "--create-home",
+                name
+            ]
+            run_command(cmd)
+
+        user_home = get_user_home(name)
+        if not user_home:
+            print(f"Failed to find user home for {name}")
+            return
+
+        keys = u.get("sshAuthorizedKeys", [])
+        if keys:
+            ssh_dir = user_home + "/.ssh"
+            ensure_dir_exists(ssh_dir, 0o700)
+            key_file = ssh_dir + '/authorized_keys'
+            if not os.path.exists(key_file):
+                with open(key_file, 'w') as f:
+                    for k in keys:
+                        f.write(k)
+                os.chmod(key_file, 0o600)
+
+
+# -------------------- staging assets --------------------
 
 def fetch_from_data(dest, url):
     print(f"  fetch from data URL")
@@ -50,8 +204,7 @@ fetchers = {
 def fetch(dest, url):
     scheme = url.split(':')[0]
     if scheme in fetchers:
-        if not os.path.exists(os.path.dirname(dest)):
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
+        ensure_dir_exists(dest)
         fetchers[scheme](dest, url)
     else:
         print(f"  fetch: unkown scheme {scheme} --> skipping!")
@@ -106,13 +259,18 @@ def get_hash_digest(hash):
     return hash.split('-')[1]
 
 
+def abbrev_hash(hash, max_length=32):
+    if len(hash) > max_length:
+        return hash[0:max_length] + "..."
+    return hash
+
+
 def compute_hash(dest, target_hash):
     hash_type = get_hash_type(target_hash)
     if hash_type in hashers:
         actual_hash = hashers[hash_type](dest)    
         with open(dest+"."+hash_type, 'w') as f:
             f.write(get_hash_digest(actual_hash))
-        print(f"  hash is {actual_hash}")
         return actual_hash
     else:
         print(f"  hash: unknown hash type {hash_type}")
@@ -122,7 +280,7 @@ def compute_hash(dest, target_hash):
 def check_hash(dest, target_hash):
     hash_type = get_hash_type(target_hash)
     with open(dest+"."+hash_type, 'r') as f:
-        return f.read() == get_hash_digest(hash)
+        return f.read() == get_hash_digest(target_hash)
     return False
 
 
@@ -143,7 +301,26 @@ def is_staged(dest, target_hash):
     return True
 
 
-def stage_file(f):
+def update_file_owner_mode(dest, f):
+    user = os.geteuid()
+    user = f.get("user", {}).get("id", user)
+    user = f.get("user", {}).get("user", user)
+
+    group = os.getegid()
+    group = f.get("group", {}).get("id", group)
+    group = f.get("group", {}).get("user", group)
+
+    mode = f.get("mode", 420)
+
+    print(f"  change file owner to {user}:{group}, mode to {mode:#o}")
+    if int(mode) > 0o777:
+        print(f"    warning: did you forget to specify file mode in _decimal_?")
+
+    shutil.chown(dest, user=user, group=group)
+    os.chmod(dest, mode)
+
+
+def stage_file(f, configset_dir):
     target_path = f.get("path")
     if target_path.startswith("/"):
         target_path = target_path[1:]
@@ -151,12 +328,12 @@ def stage_file(f):
     target_hash = f.get("contents", {}).get("verification", {}).get("hash", "")
 
     # hack until DM removes base64 encoding
-    if target_hash and not (target_hash.startswith("sha256") or target_hash.startswith("sha512")):
-        target_hash=""
+    # if target_hash and not (target_hash.startswith("sha256") or target_hash.startswith("sha512")):
+    #     target_hash=""
 
-    print(f"staging {target_path} ({target_hash}):")
+    print(f"staging {target_path} ({abbrev_hash(target_hash)}):")
 
-    dest = STAGING_DIR + '/' + target_path
+    dest = configset_dir + '/staging/' + target_path
     if is_staged(dest, target_hash):
         print(f"  already staged (skipping)")
         return False, False
@@ -167,42 +344,201 @@ def stage_file(f):
     compression = f.get("contents", {}).get("compression", "null")
     decompress(dest, compression)
 
+    update_file_owner_mode(dest, f)
+
     if target_hash:
         actual_hash = compute_hash(dest, target_hash)
         if actual_hash != target_hash:
-            print(f"  hash checksum mismatch ({actual_hash} != {target_hash})")
+            print(f"  hash mismatch ({actual_hash} != {target_hash})")
             return True, True
+        else:
+            print(f"  hash matches")
+
+
     return False, True
 
 
-def stage_files(ignition):
+def stage_files(ignition, configset_dir):
     staging_failed = False
     staging_had_updates = False
     for f in ignition.get("storage", {}).get("files", []):
-        failed, updated = stage_file(f)
+        failed, updated = stage_file(f, configset_dir)
         staging_failed |= failed
         staging_had_updates |= updated
     return staging_failed, staging_had_updates
 
 
-def apply_ignition(ignition):
-    staging_failed, staging_had_updates = stage_files(ignition)
-    print(f"apply ignition: failures {staging_failed}, updates {staging_had_updates}")
+# -------------------- applying configuration sets --------------------
 
+sync_allow_list = [
+    "/etc/*",
+    "/var/*"
+]
+
+sync_deny_list = [
+    "*.sha256",
+    "*.sha512",
+    "*/.gitkeep",
+    "/var/transmission/*"
+]
+
+
+def matches_glob(string, glob="*"):
+    parts = glob.split("*")
+    if parts[0] and not string.startswith(parts[0]):
+        return False
+    if parts[-1] and not string.endswith(parts[-1]):
+        return False
+    return True
+
+
+def matches_globs(string, globs):
+    for glob in globs:
+        if matches_glob(string, glob):
+            return True
+    return False
+
+
+def files_to_sync(source):
+    files_to_sync = []
+    for root, subdirs, files in os.walk(source):
+        root = root[len(source):]
+        for f in files:
+            path = os.path.join(root, f)
+            if matches_globs(path, sync_allow_list) and not matches_globs(path, sync_deny_list):
+                files_to_sync.append(path)
+    return files_to_sync
+
+
+def sync_configset(source, dest, relabel=False):
+    for f in files_to_sync(source):
+        print(f"syncing {source + f} to {dest + f}")
+        ensure_dir_exists(dest + f)
+        hardlink_replacing(source + f, dest + f)
+        if relabel:
+            run_command(["restorecon", dest + f])
+
+
+def update_configset(configset_dir, root_dir, sync_root=True):
+    print("Updating configset:")
+    run_command(["rm", "-rf", configset_dir + "/next"])
+    run_command(["mkdir", configset_dir + "/next"])
+    sync_configset(configset_dir + "/staging", configset_dir + "/next")
+    
+    run_command(["mv", configset_dir + "/last", configset_dir + "/lastlast"])
+    run_command(["mv", configset_dir + "/current", configset_dir + "/last"])
+    run_command(["mv", configset_dir + "/next", configset_dir + "/current"])
+    
+    if sync_root:
+        sync_configset(configset_dir + "/current", root_dir, relabel=False)
+
+    run_command(["rm", "-rf", configset_dir + "/lastlast"])
+
+
+# -------------------- banner updates --------------------
+
+def update_banner(url: str, device_id: Optional[str]):
+    if device_id is None:
+        device_id = "device ID not yet known"
+    with open("/run/transmission-banner", "w") as bannerfile:
+        bannerfile.write(
+            f"Using {url} to provision this device ({device_id})\n\n"
+        )
+
+
+# -------------------- argparse and main --------------------
 
 def main(args: argparse.Namespace):
     transmission_url = get_transmission_url()
-    machine_id = get_machine_id()
-    arch = platform.machine()
+    if not transmission_url:
+        print("No Transmission URL configured, exiting", file=sys.stderr)
+        return
 
-    url = "%s/netboot/%s/ignition/%s" % (transmission_url, arch, machine_id)
-    with urllib.request.urlopen(url) as f:
-        ignition = json.loads(f.read().decode())
-        apply_ignition(ignition)
+    device_id = get_device_id()
+
+    if "update-banner" not in args.steps_to_skip:
+        update_banner(transmission_url, device_id)
+        if "update-banner" == args.stop_after_step:
+            return
+
+    if device_id is None:
+        print("Unable to determine default interface, exiting", file=sys.stderr)
+        return
+
+    ignition = get_ignition(
+        f"{transmission_url}/netboot/{platform.machine()}/ignition/{device_id}")
+    if ignition is None:
+        print("Unable to retrieve Ignition config, exiting", file=sys.stderr)
+        return
+
+    if "create-users" not in args.steps_to_skip:
+        create_users(ignition)
+        if "create-users" == args.stop_after_step:
+            return
+
+    staging_had_updates = False
+    if "stage-files" not in args.steps_to_skip:
+        staging_failed, staging_had_updates = stage_files(
+            ignition, args.configset_dir)
+        if staging_failed:
+            print("One or more files couldn't be staged, exiting", file=sys.stderr)
+            return
+        if "stage-files" == args.stop_after_step:
+            return
+
+    if  "update-configsets" not in args.steps_to_skip:
+        if staging_had_updates:
+            sync_root = ("sync-root" not in args.steps_to_skip)
+            update_configset(
+                args.configset_dir, args.root_dir, sync_root)
+        if "update-configsets" == args.stop_after_step:
+            return
+
+
+def step(arg):
+    if arg not in ALLOWED_STEPS:
+        raise argparse.ArgumentTypeError( 
+            f"Step must be one of {ALLOWED_STEPS}, got '{arg}'.") 
+    return arg
 
 
 def get_args(argv: List[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run Transmission")
+    parser = argparse.ArgumentParser(
+        description="Run Transmission",
+        epilog=f"Valid steps are {ALLOWED_STEPS}."
+    )
+
+    parser.add_argument(
+        "--skip-step",
+        dest="steps_to_skip",
+        action="append",
+        type=step,
+        help=f"Skip this step.",
+    )
+    parser.add_argument(
+        "--stop-after",
+        dest="stop_after_step",
+        action="store",
+        type=step,
+        help=f"Stop after this step.",
+    )
+    parser.add_argument(
+        "--configset-dir",
+        dest="configset_dir",
+        action="store",
+        type=str,
+        help=f"Directory for storing config sets.",
+        default=DEFAULT_CONFIGSET_DIR,
+    )
+    parser.add_argument(
+        "--root-dir",
+        dest="root_dir",
+        action="store",
+        type=str,
+        help=f"Root directory to sync config sets to.",
+        default=DEFAULT_ROOT_DIR,
+    )
+
     return parser.parse_args(argv)
 
 
