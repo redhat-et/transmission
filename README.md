@@ -62,3 +62,16 @@ CONFIGSET_ROOT
 Whereby `staging` contains the - possibly incomplete and later retried - set of configuration files. If the Ignition config contains verfication hashes, Transmission will use those to detect unmodified and already downloaded assets and will avoid downloading them again.
 
 When staging holds a complete, verfied set of assets, Transmission will sync them to a (temporary) `next` directory, and then start rotating configuration sets `next`🠖`current`🠖`last`🠖`lastlast`, finally deleting `lastlast`. Finally, it syncs the `current` set with the system's root dir, relabeling SELinux contexts as necessary.
+
+### Managing `systemd` Updates
+Transmission can automatically reload or restart `systemd` units or reboot the system when configuration changes that requires these actions. This works by creating one or more of these files
+* `/etc/transmission.d/units_requiring_reload.yaml`
+* `/etc/transmission.d/units_requiring_restart.yaml`
+* `/etc/transmission.d/units_requiring_reboot.yaml`
+
+and adding a dictionary of `{"unit_name": ["glob_pattern_1", "glob_pattern_2", ...]}` to it, for example:
+```
+demo.service:
+  - /var/opt/demo/*
+  - /etc/demo/*.conf
+```
