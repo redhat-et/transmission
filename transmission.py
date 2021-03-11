@@ -501,8 +501,10 @@ def update_systemd_units(changed_files, units):
             continue
         if enabled:
             run_command(["systemctl", "enable", unit])
+            run_command(["systemctl", "start", unit])
         else:
             run_command(["systemctl", "disable", unit])
+            run_command(["systemctl", "stop", unit])
 
     # check which units require reloading and reload them
     for unit in get_units_requiring("reload", changed_files):
