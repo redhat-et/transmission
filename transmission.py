@@ -150,6 +150,10 @@ def hardlink_replacing(source, dest):
     run_command(["ln", source, dest])
 
 
+def copy_replacing(source, dest):
+    run_command(["cp", "-fpZ", source, dest])
+
+
 def get_ignition(url):
     print(f"Requesting from {url}")
     with urllib.request.urlopen(url) as f:
@@ -440,7 +444,11 @@ def sync_configset(source, dest, relabel=False):
     for f in files_to_sync(source):
         print(f"syncing {source + f} to {dest + f}")
         ensure_dir_exists(os.path.dirname(dest + f))
-        hardlink_replacing(source + f, dest + f)
+        if f"{dest+f}".startswith("/etc"):
+            # can't hardlink across devices (from /var to /etc), so copy instead
+            copy_replacing(source + f, dest + f)
+        else:
+            hardlink_replacing(source + f, dest + f)
         if relabel:
             run_command(["restorecon", dest + f])
 
