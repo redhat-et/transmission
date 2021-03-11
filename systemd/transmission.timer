@@ -1,0 +1,10 @@
+
+[Unit]
+Description=Trigger Transmission
+
+[Timer]
+OnActiveSec=10sec
+OnUnitActiveSec=1min
+
+[Install]
+WantedBy=timers.target

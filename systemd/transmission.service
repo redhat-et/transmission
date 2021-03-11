@@ -1,0 +1,6 @@
+[Unit]
+Description=Run Transmission
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/transmission

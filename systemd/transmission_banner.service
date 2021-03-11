@@ -1,0 +1,6 @@
+[Unit]
+Description=Run Transmission to update issue banner
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/transmission --stop-after update-banner
