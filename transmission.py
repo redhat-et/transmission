@@ -16,12 +16,15 @@ import subprocess
 import sys
 import urllib.request
 
-DEFAULT_CONFIGSET_DIR = "/var/opt/transmission/configsets"
 
+# Where Transmission stores config sets
+DEFAULT_TRANSMISSION_CONFIGSET_DIR = "/var/opt/transmission/configsets"
+# The dir to sync config to
 DEFAULT_ROOT_DIR = "/"
-
+# Where Transmission places systemd units
 DEFAULT_SYSTEMD_DIR = "/etc/systemd/system"
 
+# Steps performed by Transmission
 ALLOWED_STEPS = [
     "update-banner",
     "create-users",
@@ -30,6 +33,21 @@ ALLOWED_STEPS = [
     "sync-root",
     "update-systemd-units",
 ]
+
+# Transmission only syncs to /etc and /var
+SYNC_ALLOW_LIST = [
+    "/etc/*",
+    "/var/*"
+]
+
+# Transmission ignores hash files, changes to its state directory, and others
+SYNC_DENY_LIST = [
+    "*.sha256",
+    "*.sha512",
+    "*/.gitkeep",
+    "/var/transmission/*"
+]
+
 
 
 # -------------------- device ID and Transmission URL --------------------
@@ -133,6 +151,22 @@ def get_ignition(url):
     print(f"Requesting from {url}")
     with urllib.request.urlopen(url) as f:
         return json.loads(f.read().decode())
+
+
+def matches_glob(string, glob="*"):
+    parts = glob.split("*")
+    if parts[0] and not string.startswith(parts[0]):
+        return False
+    if parts[-1] and not string.endswith(parts[-1]):
+        return False
+    return True
+
+
+def matches_globs(string, globs):
+    for glob in globs:
+        if matches_glob(string, glob):
+            return True
+    return False
 
 
 # -------------------- adding users --------------------
@@ -388,42 +422,13 @@ def stage_files(ignition, configset_dir):
 
 # -------------------- applying configuration sets --------------------
 
-sync_allow_list = [
-    "/etc/*",
-    "/var/*"
-]
-
-sync_deny_list = [
-    "*.sha256",
-    "*.sha512",
-    "*/.gitkeep",
-    "/var/transmission/*"
-]
-
-
-def matches_glob(string, glob="*"):
-    parts = glob.split("*")
-    if parts[0] and not string.startswith(parts[0]):
-        return False
-    if parts[-1] and not string.endswith(parts[-1]):
-        return False
-    return True
-
-
-def matches_globs(string, globs):
-    for glob in globs:
-        if matches_glob(string, glob):
-            return True
-    return False
-
-
 def files_to_sync(source):
     files_to_sync = []
     for root, subdirs, files in os.walk(source):
         root = root[len(source):]
         for f in files:
             path = os.path.join(root, f)
-            if matches_globs(path, sync_allow_list) and not matches_globs(path, sync_deny_list):
+            if matches_globs(path, SYNC_ALLOW_LIST) and not matches_globs(path, SYNC_DENY_LIST):
                 files_to_sync.append(path)
     return files_to_sync
 
@@ -567,7 +572,7 @@ def get_args(argv: List[str]) -> argparse.Namespace:
         action="store",
         type=str,
         help=f"Directory for storing config sets.",
-        default=DEFAULT_CONFIGSET_DIR,
+        default=DEFAULT_TRANSMISSION_CONFIGSET_DIR,
     )
     parser.add_argument(
         "--root-dir",
