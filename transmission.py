@@ -456,7 +456,9 @@ def update_configset(configset_dir, root_dir, sync_root=True):
     run_command(["mv", configset_dir + "/next", configset_dir + "/current"])
     
     if sync_root:
-        sync_configset(configset_dir + "/current", root_dir, relabel=False)
+        if root_dir.endswith("/"):
+            root_dir = root_dir[:-1]
+        sync_configset(configset_dir + "/current", root_dir, relabel=True)
 
     run_command(["rm", "-rf", configset_dir + "/lastlast"])
 
