@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
 from typing import Optional, List
 
@@ -21,7 +21,7 @@ import yaml
 # Where Transmission stores its own configs
 DEFAULT_TRANSMISSION_CONFIG_DIR = "/etc/transmission.d"
 # Where Transmission stores config sets
-DEFAULT_TRANSMISSION_CONFIGSET_DIR = "/var/opt/transmission/configsets"
+DEFAULT_TRANSMISSION_CONFIGSET_DIR = "/var/lib/transmission/configsets"
 # The dir to sync config to
 DEFAULT_ROOT_DIR = "/"
 # Where Transmission places systemd units
@@ -48,7 +48,7 @@ SYNC_DENY_LIST = [
     "*.sha256",
     "*.sha512",
     "*/.gitkeep",
-    "/var/transmission/*"
+    "/var/lib/transmission/*"
 ]
 
 
