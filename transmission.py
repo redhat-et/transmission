@@ -15,8 +15,11 @@ import stat
 import subprocess
 import sys
 import urllib.request
+import yaml
 
 
+# Where Transmission stores its own configs
+DEFAULT_TRANSMISSION_CONFIG_DIR = "/etc/transmission.d"
 # Where Transmission stores config sets
 DEFAULT_TRANSMISSION_CONFIGSET_DIR = "/var/opt/transmission/configsets"
 # The dir to sync config to
@@ -358,16 +361,16 @@ def update_file_owner_mode(dest, f):
 
 def stage_file(f, configset_dir):
     target_path = f.get("path")
-    if target_path.startswith("/"):
-        target_path = target_path[1:]
+    if not target_path.startswith("/"):
+        target_path = f"/{target_path}"
 
     target_hash = f.get("contents", {}).get("verification", {}).get("hash", "")
 
     print(f"staging {target_path} ({abbrev_hash(target_hash)}):")
 
-    dest = configset_dir + '/staging/' + target_path
+    dest = configset_dir + '/staging' + target_path
     if is_staged(dest, target_hash):
-        print(f"  already staged (skipping)")
+        print(f"  already staged --> skipping")
         return False, None
 
     url = f.get("contents", {}).get("source", "")
@@ -460,8 +463,37 @@ def update_configset(configset_dir, root_dir, sync_root=True):
 
 # -------------------- applying configuration sets --------------------
 
-def update_systemd_units(units):
+def get_units_requiring(action, changed_files):
+    units = []
+
+    reqs_file = DEFAULT_TRANSMISSION_CONFIG_DIR + f"/units_requiring_{action}.yaml"
+    if not os.path.exists(reqs_file):
+        return units
+
+    reqs = {}
+    with open(reqs_file, "r") as f:
+        try:
+            reqs = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            print(f"Error parsing {reqs_file}: {e} --> skipping.", file=sys.stderr)
+            return units
+
+    for unit in reqs.keys():
+        globs = reqs.get(unit, [])
+        if not isinstance(globs, list):
+            print(f"Error parsing {reqs_file}: unit {unit} needs to map to list of globs --> skipping", file=sys.stderr)
+            continue
+        for f in changed_files:
+            if matches_globs(f, globs):
+                units.append(unit)
+    return units
+
+
+def update_systemd_units(changed_files, units):
+    # reload systemd to make it aware of new units
     run_command(["systemctl", "daemon-reload"])
+
+    # enable/disable units according to config
     for unit, enabled in units.items():
         if enabled is None: # Ignition defines 'None' as "no change"
             continue
@@ -469,6 +501,23 @@ def update_systemd_units(units):
             run_command(["systemctl", "enable", unit])
         else:
             run_command(["systemctl", "disable", unit])
+
+    # check which units require reloading and reload them
+    for unit in get_units_requiring("reload", changed_files):
+        print(f"Reloading systemd unit {unit}.")
+        run_command(["systemctl", "reload", unit])
+
+    # check which units require restarting and restart them
+    for unit in get_units_requiring("restart", changed_files):
+        print(f"Restarting systemd unit {unit}.")
+        run_command(["systemctl", "restart", unit])
+
+    # check whether units require rebooting and reboot accordingly
+    units_requiring_reboot = get_units_requiring("reboot", changed_files)
+    if units_requiring_reboot:
+        print(f"Rebooting system as required by {units_requiring_reboot}.")
+        run_command(["systemctl", "reboot"])
+
     return
 
 
@@ -534,7 +583,7 @@ def main(args: argparse.Namespace):
 
     if  "update-systemd-units" not in args.steps_to_skip:
         if changed_systemd_units:
-            update_systemd_units(changed_systemd_units)
+            update_systemd_units(changed_files, changed_systemd_units)
         if "update-systemd-units" == args.stop_after_step:
             return
 
