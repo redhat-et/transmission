@@ -18,6 +18,7 @@ When run, Transmission performs a sequence of steps:
 * stage-files: Downloads, decodes, uncompresses, and verifies files and systemd units into a staging area.
 * update-configsets: Makes staged files the current config set, backing up the old current set beforehand.
 * sync-root: Syncs the current configuration set to the root directory (i.e. activates the configuration).
+* update-selinux: Updates the setenforce mode according to the configuration.
 * update-systemd-units: Reloads the systemd daemon and enables/disables units as per the configuration.
 
 Using the `--skip-step` and `--stop-after` options, it is possible to skip any of these steps or stop after a step, respectively. This is mainly for testing, but also to only update the banner.
@@ -62,6 +63,9 @@ CONFIGSET_ROOT
 Whereby `staging` contains the - possibly incomplete and later retried - set of configuration files. If the Ignition config contains verfication hashes, Transmission will use those to detect unmodified and already downloaded assets and will avoid downloading them again.
 
 When staging holds a complete, verfied set of assets, Transmission will sync them to a (temporary) `next` directory, and then start rotating configuration sets `next`🠖`current`🠖`last`🠖`lastlast`, finally deleting `lastlast`. Finally, it syncs the `current` set with the system's root dir, relabeling SELinux contexts as necessary.
+
+### Managing SELinux Mode
+Should a user modify `/etc/selinux/config` to change the default SELinux state of the system, Transmission calls `setenforce` to effect this change immediately (without having to reboot).
 
 ### Managing `systemd` Updates
 Transmission can automatically reload or restart `systemd` units or reboot the system when configuration changes that requires these actions. This works by creating one or more of these files

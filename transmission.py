@@ -34,6 +34,7 @@ ALLOWED_STEPS = [
     "stage-files",
     "update-configsets",
     "sync-root",
+    "update-selinux",
     "update-systemd-units",
 ]
 
@@ -471,7 +472,23 @@ def update_configset(configset_dir, root_dir, sync_root=True):
     run_command(["rm", "-rf", configset_dir + "/lastlast"])
 
 
-# -------------------- applying configuration sets --------------------
+# -------------------- updating selinux --------------------
+
+def update_selinux():
+    if os.path.exists("/etc/selinux/config"):
+        enforce = 1
+        with open("/etc/selinux/config", "r") as f:
+            for line in f:
+                line = line.strip().lower()
+                print(line)
+                if line.startswith("selinux="):
+                    if line.split("=")[1] == "permissive":
+                        enforce = 0
+                    break
+        run_command(["setenforce", str(enforce)])
+
+
+# -------------------- updating systemd units --------------------
 
 def get_units_requiring(action, changed_files):
     units = []
@@ -591,6 +608,12 @@ def main(args: argparse.Namespace):
             update_configset(
                 args.configset_dir, args.root_dir, sync_root)
         if "update-configsets" == args.stop_after_step:
+            return
+
+    if  "update-selinux" not in args.steps_to_skip:
+        if changed_files and "/etc/selinux/config" in changed_files:
+            update_selinux()
+        if "update-selinux" == args.stop_after_step:
             return
 
     if  "update-systemd-units" not in args.steps_to_skip:
