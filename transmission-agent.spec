@@ -4,7 +4,7 @@ Release:       1%{?dist}
 Summary:       An experimental device management agent for ostree-based Linux operating systems
 License:       Apache License, Version 2.0
 URL:           https://github.com/fzdarsky/transmission
-Source0:       https://github.com/fzdarsky/transmission/archive/v%{version}.tar.gz#/%{name}-%{version}.tar.gz
+Source0:       https://github.com/fzdarsky/transmission/archive/%{version}.tar.gz#/%{name}-%{version}.tar.gz
 
 BuildArch: noarch
 Requires: python3-pyyaml
@@ -18,8 +18,8 @@ Transmission is an experimental device management agent for ostree-based Linux o
 %build
 
 %install
-install transmission.py %{buildroot}/usr/bin/transmission
-chmod +x %{buildroot}/usr/bin/transmission
+mkdir -p %{buildroot}/usr/bin/
+install -m 0755 transmission.py %{buildroot}/usr/bin/transmission
 mkdir -p %{buildroot}%{_unitdir}
 install systemd/transmission* %{buildroot}%{_unitdir}/
 mkdir -p %{buildroot}%{_sharedstatedir}/transmission
@@ -29,7 +29,7 @@ ln -s /run/transmission-banner %{buildroot}%{_sysconfdir}/issue.d/transmission.i
 %files
 %license LICENSE
 %{_sharedstatedir}/transmission
-%{_bindir}/transmission
+/usr/bin/transmission
 %{_sysconfdir}/issue.d/transmission.issue
 %{_unitdir}/*
 
