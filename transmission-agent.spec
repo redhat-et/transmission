@@ -13,7 +13,7 @@ Requires: python3-pyyaml
 Transmission is an experimental device management agent for ostree-based Linux operating systems.
 
 %prep
-%autosetup -n %{name}-%{version}
+%autosetup -n transmission-%{version}
 
 %build
 
