@@ -136,9 +136,11 @@ def run_command(args):
     return result.returncode, result.stdout, result.stderr
 
 
-def ensure_dir_exists(dirpath, mode=0o755):
+def ensure_dir_exists(dirpath, mode=0o755, owner=''):
     if not os.path.exists(dirpath):
         os.makedirs(dirpath, exist_ok=True)
+        if owner:
+            shutil.chown(dirpath, user=owner, group=owner)
         os.chmod(dirpath, mode)
 
 
@@ -214,12 +216,13 @@ def create_users(ignition):
         keys = u.get("sshAuthorizedKeys", [])
         if keys:
             ssh_dir = user_home + "/.ssh"
-            ensure_dir_exists(ssh_dir, 0o700)
+            ensure_dir_exists(ssh_dir, 0o700, name)
             key_file = ssh_dir + '/authorized_keys'
             if not os.path.exists(key_file):
                 with open(key_file, 'w') as f:
                     for k in keys:
                         f.write(k)
+                shutil.chown(key_file, user=name, group=name)
                 os.chmod(key_file, 0o600)
 
 
