@@ -218,7 +218,7 @@ def create_users(ignition):
             ssh_dir = user_home + "/.ssh"
             ensure_dir_exists(ssh_dir, 0o700, name)
             key_file = ssh_dir + '/authorized_keys'
-            if not os.path.exists(key_file):
+            if not os.path.exists(key_file) or os.stat(key_file).st_size == 0:
                 with open(key_file, 'w') as f:
                     for k in keys:
                         f.write(k)

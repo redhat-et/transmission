@@ -1,5 +1,5 @@
 Name:          transmission-agent
-Version:       0.1.1
+Version:       0.1.2
 Release:       1%{?dist}
 Summary:       An experimental device management agent for ostree-based Linux operating systems
 License:       Apache License, Version 2.0
