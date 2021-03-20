@@ -6,6 +6,7 @@ import argparse
 import base64
 import gzip
 import hashlib
+import logging
 import json
 import os
 import platform
@@ -125,14 +126,16 @@ def get_transmission_url():
 # -------------------- helpers --------------------
 
 def run_command(args):
-    print(f"running command {args}")
+    logging.debug(f"running command {args}")
     result = subprocess.run(
         args,
         capture_output=True,
         text=True,
         env=os.environ.copy()
     )
-    print(f"  return code: {result.returncode}\n  stdout: '{result.stdout}'\n  stderr: '{result.stderr}'")
+    logging.debug(f"  return code: {result.returncode}")
+    logging.debug(f"  stdout: '{result.stdout}'")
+    logging.debug(f"  stderr: '{result.stderr}'")
     return result.returncode, result.stdout, result.stderr
 
 
@@ -158,7 +161,7 @@ def copy_replacing(source, dest):
 
 
 def get_ignition(url):
-    print(f"Requesting from {url}")
+    logging.info(f"Requesting from {url}")
     with urllib.request.urlopen(url) as f:
         return json.loads(f.read().decode())
 
@@ -200,7 +203,7 @@ def create_users(ignition):
     for u in ignition.get("passwd", {}).get("users", []):
         name = u.get("name")
         if not user_exists(name):
-            print(f"create user {name}")
+            logging.info(f"create user {name}")
             cmd = [
                 "/usr/sbin/useradd",
                 "--create-home",
@@ -210,7 +213,7 @@ def create_users(ignition):
 
         user_home = get_user_home(name)
         if not user_home:
-            print(f"Failed to find user home for {name}")
+            logging.warning(f"Failed to find user home for {name}")
             return
 
         keys = u.get("sshAuthorizedKeys", [])
@@ -229,7 +232,7 @@ def create_users(ignition):
 # -------------------- staging assets --------------------
 
 def fetch_from_data(dest, url):
-    print(f"  fetch from data URL")
+    logging.debug(f"  fetch from data URL")
     data = url.split("base64,")[1]
     data = base64.b64decode(data)
     with open(dest, 'wb') as f:
@@ -237,7 +240,7 @@ def fetch_from_data(dest, url):
 
 
 def fetch_from_http(dest, url):
-    print(f"  fetch from {url}")
+    logging.debug(f"  fetch from {url}")
     urllib.request.urlretrieve(url, dest) 
 
 
@@ -254,11 +257,11 @@ def fetch(dest, url):
         ensure_dir_exists(os.path.dirname(dest))
         fetchers[scheme](dest, url)
     else:
-        print(f"  fetch: unkown scheme {scheme} --> skipping!")
+        logging.debug(f"  fetch: unkown scheme {scheme} --> skipping!")
 
 
 def decompress_gzip(dest):
-    print(f"  decompress (gzip)")
+    logging.debug(f"  decompress (gzip)")
     with gzip.open(dest, 'rb') as f_in:
         with open(dest + ".tmp", 'wb') as f_out:
             shutil.copyfileobj(f_in, f_out)
@@ -279,7 +282,7 @@ def decompress(dest, compression):
     if compression in decompressors:
         decompressors[compression](dest)
     else:
-        print(f"  decompress: unknwon compression {compression} --> skipping!")
+        logging.debug(f"  decompress: unknwon compression {compression} --> skipping!")
     
 
 def hash_sha256(dest):
@@ -320,7 +323,7 @@ def compute_hash(dest, target_hash):
             f.write(get_hash_digest(actual_hash))
         return actual_hash
     else:
-        print(f"  hash: unknown hash type {hash_type}")
+        logging.debug(f"  hash: unknown hash type {hash_type}")
         return ""
 
 
@@ -359,9 +362,9 @@ def update_file_owner_mode(dest, f):
 
     mode = f.get("mode", 420)
 
-    print(f"  change file owner to {user}:{group}, mode to {mode:#o}")
+    logging.debug(f"  change file owner to {user}:{group}, mode to {mode:#o}")
     if int(mode) > 0o777:
-        print(f"    warning: did you forget to specify file mode in _decimal_?")
+        logging.debug(f"    warning: did you forget to specify file mode in _decimal_?")
 
     shutil.chown(dest, user=user, group=group)
     os.chmod(dest, mode)
@@ -374,11 +377,11 @@ def stage_file(f, configset_dir):
 
     target_hash = f.get("contents", {}).get("verification", {}).get("hash", "")
 
-    print(f"staging {target_path} ({abbrev_hash(target_hash)}):")
+    logging.debug(f"staging {target_path} ({abbrev_hash(target_hash)})")
 
     dest = configset_dir + '/staging' + target_path
     if is_staged(dest, target_hash):
-        print(f"  already staged --> skipping")
+        logging.debug(f"  already staged --> skipping")
         return False, None
 
     url = f.get("contents", {}).get("source", "")
@@ -392,10 +395,10 @@ def stage_file(f, configset_dir):
     if target_hash:
         actual_hash = compute_hash(dest, target_hash)
         if actual_hash != target_hash:
-            print(f"  hash mismatch ({actual_hash} != {target_hash})")
+            logging.warn(f"  hash mismatch ({actual_hash} != {target_hash})")
             return True, None
         else:
-            print(f"  hash matches")
+            logging.debug(f"  hash matches")
     return False, target_path
 
 
@@ -446,7 +449,7 @@ def files_to_sync(source):
 
 def sync_configset(source, dest, relabel=False):
     for f in files_to_sync(source):
-        print(f"syncing {source + f} to {dest + f}")
+        logging.debug(f"syncing {source + f} to {dest + f}")
         ensure_dir_exists(os.path.dirname(dest + f))
         if f"{dest+f}".startswith("/etc"):
             # can't hardlink across devices (from /var to /etc), so copy instead
@@ -458,7 +461,7 @@ def sync_configset(source, dest, relabel=False):
 
 
 def update_configset(configset_dir, root_dir, sync_root=True):
-    print("Updating configset:")
+    logging.info("Updating configset")
     run_command(["rm", "-rf", configset_dir + "/next"])
     run_command(["mkdir", configset_dir + "/next"])
     sync_configset(configset_dir + "/staging", configset_dir + "/next")
@@ -483,7 +486,6 @@ def update_selinux():
         with open("/etc/selinux/config", "r") as f:
             for line in f:
                 line = line.strip().lower()
-                print(line)
                 if line.startswith("selinux="):
                     if line.split("=")[1] == "permissive":
                         enforce = 0
@@ -505,13 +507,13 @@ def get_units_requiring(action, changed_files):
         try:
             reqs = yaml.safe_load(f)
         except yaml.YAMLError as e:
-            print(f"Error parsing {reqs_file}: {e} --> skipping.", file=sys.stderr)
+            logging.error(f"Error parsing {reqs_file}: {e} --> skipping.", file=sys.stderr)
             return units
 
     for unit in reqs.keys():
         globs = reqs.get(unit, [])
         if not isinstance(globs, list):
-            print(f"Error parsing {reqs_file}: unit {unit} needs to map to list of globs --> skipping", file=sys.stderr)
+            logging.error(f"Error parsing {reqs_file}: unit {unit} needs to map to list of globs --> skipping", file=sys.stderr)
             continue
         for f in changed_files:
             if matches_globs(f, globs):
@@ -536,18 +538,18 @@ def update_systemd_units(changed_files, units):
 
     # check which units require reloading and reload them
     for unit in get_units_requiring("reload", changed_files):
-        print(f"Reloading systemd unit {unit}.")
+        logging.info(f"Reloading systemd unit {unit}.")
         run_command(["systemctl", "reload", unit])
 
     # check which units require restarting and restart them
     for unit in get_units_requiring("restart", changed_files):
-        print(f"Restarting systemd unit {unit}.")
+        logging.info(f"Restarting systemd unit {unit}.")
         run_command(["systemctl", "restart", unit])
 
     # check whether units require rebooting and reboot accordingly
     units_requiring_reboot = get_units_requiring("reboot", changed_files)
     if units_requiring_reboot:
-        print(f"Rebooting system as required by {units_requiring_reboot}.")
+        logging.info(f"Rebooting system as required by {units_requiring_reboot}.")
         run_command(["systemctl", "reboot"])
 
     return
@@ -567,9 +569,14 @@ def update_banner(url: str, device_id: Optional[str]):
 # -------------------- argparse and main --------------------
 
 def main(args: argparse.Namespace):
+    numeric_log_level = getattr(logging, args.log_level.upper(), None)
+    if not isinstance(numeric_log_level, int):
+        raise ValueError('Invalid log level: %s' % args.log_level)
+    logging.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', level=numeric_log_level)
+
     transmission_url = get_transmission_url()
     if not transmission_url:
-        print("No Transmission URL configured, exiting", file=sys.stderr)
+        logging.error("No Transmission URL configured, exiting", file=sys.stderr)
         return
 
     device_id = get_device_id()
@@ -580,13 +587,13 @@ def main(args: argparse.Namespace):
             return
 
     if device_id is None:
-        print("Unable to determine default interface, exiting", file=sys.stderr)
+        logging.warning("Unable to determine default interface, exiting", file=sys.stderr)
         return
 
     ignition = get_ignition(
         f"{transmission_url}/netboot/{platform.machine()}/ignition/{device_id}")
     if ignition is None:
-        print("Unable to retrieve Ignition config, exiting", file=sys.stderr)
+        logging.warning("Unable to retrieve Ignition config, exiting", file=sys.stderr)
         return
 
     if "create-users" not in args.steps_to_skip:
@@ -600,7 +607,7 @@ def main(args: argparse.Namespace):
         errors, changed_files, changed_systemd_units = stage_files(
             ignition, args.configset_dir)
         if errors:
-            print("One or more files couldn't be staged, exiting", file=sys.stderr)
+            logging.warning("One or more files couldn't be staged, exiting", file=sys.stderr)
             return
         if "stage-files" == args.stop_after_step:
             return
@@ -668,6 +675,14 @@ def get_args(argv: List[str]) -> argparse.Namespace:
         type=str,
         help=f"Root directory to sync config sets to.",
         default=DEFAULT_ROOT_DIR,
+    )
+    parser.add_argument(
+        "--log-level",
+        dest="log_level",
+        action="store",
+        type=str,
+        help=f"Log level (error, warning, info, debug).",
+        default="info",
     )
 
     args = parser.parse_args(argv)

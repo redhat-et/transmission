@@ -3,4 +3,4 @@ Description=Run Transmission
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/transmission
+ExecStart=/usr/bin/transmission --log-level debug
