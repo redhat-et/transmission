@@ -599,38 +599,87 @@ def get_units_requiring(action, changed_files):
     return units
 
 
-def update_systemd_units(changed_files, units):
+def unit_is_running(unit):
+    rc, _, _ = run_command(["echo", "systemctl", "is-active", unit])
+    return (rc == 0)
+
+
+def update_systemd_units(current_configset_dir, changed_files):
+    logging.info("Updating systemd units")
+
     # reload systemd to make it aware of new units
-    run_command(["systemctl", "daemon-reload"])
+    # run_command(["systemctl", "daemon-reload"])
+    run_command(["echo", "systemctl", "daemon-reload"])
 
-    # enable/disable units according to config
-    for unit, enabled in units.items():
-        if enabled is None: # Ignition defines 'None' as "no change"
-            continue
-        if enabled:
-            run_command(["systemctl", "enable", unit])
-            run_command(["systemctl", "start", unit])
-        else:
-            run_command(["systemctl", "disable", unit])
-            run_command(["systemctl", "stop", unit])
+    # load currently configured target states for units
+    unit_states = collections.OrderedDict()
+    with open(current_configset_dir + "/.transmission.systemd_unit_states.yaml", "r") as f:
+        try:
+            units = yaml.safe_load(f)
+            for unit in units:
+                unit_states[unit.get("unit")] = {'enabled': unit.get("enabled"), 'started': unit.get("started")}
+        except yaml.YAMLError as e:
+            logging.error(f"Error parsing unit state file: {e}.")
 
-    # check which units require reloading and reload them
+    # check which units require reloading and annotate them
     for unit in get_units_requiring("reload", changed_files):
-        logging.info(f"Reloading systemd unit {unit}.")
-        run_command(["systemctl", "reload", unit])
+        if unit not in unit_states:
+            unit_states[unit] = {}
+        unit_states[unit]['reloaded'] = True
 
-    # check which units require restarting and restart them
+    # check which units require restarting and annotate them
     for unit in get_units_requiring("restart", changed_files):
-        logging.info(f"Restarting systemd unit {unit}.")
-        run_command(["systemctl", "restart", unit])
+        if unit not in unit_states:
+            unit_states[unit] = {}
+        unit_states[unit]['restarted'] = True
 
-    # check whether units require rebooting and reboot accordingly
+    # check which units require a reboot
     units_requiring_reboot = get_units_requiring("reboot", changed_files)
-    if units_requiring_reboot:
+
+    # now apply changes in the following groups (using the order specified
+    # in the config within a group):
+    # 1) enable/disable services, stopping disabled services immediately
+    for unit, states in unit_states.items():
+        enabled = states.get("enabled", None)
+        if enabled is not None: # Ignition defines 'None' as "no change"
+            if enabled:
+                run_command(["systemctl", "enable", unit])
+            else:
+                run_command(["systemctl", "disable", unit])
+        started = states.get("started", None)
+        if started is not None:
+            # stop units not supposed to run now, but only start units later
+            if not started:
+                run_command(["systemctl", "stop", unit])
+
+    # 2) if a reboot is required, might as well do it now
+    if len(units_requiring_reboot) > 0:
         logging.info(f"Rebooting system as required by {units_requiring_reboot}.")
         run_command(["systemctl", "reboot"])
 
-    return
+    # 3) reload or restart units if they are already running
+    for unit, states in unit_states.items():
+        if not unit_is_running(unit):
+            continue
+
+        if states.get("restarted", False):
+            logging.info(f"Restarting systemd unit {unit}.")
+            # we stop+start rather than restarting, as this flushes
+            # all of the unit's resources (see systemd man)
+            run_command(["systemctl", "stop", unit])
+            run_command(["systemctl", "start", unit])
+        elif states.get("reloaded", False):
+            logging.info(f"Reloading systemd unit {unit}.")
+            run_command(["systemctl", "reload", unit])
+
+    # 4) start all units supposed to run but not yet started
+    for unit, states in unit_states.items():
+        if unit_is_running(unit):
+            continue
+
+        if states.get("started", False):
+            logging.info(f"Starting systemd unit {unit}.")
+            run_command(["systemctl", "start", unit])
 
 
 # -------------------- banner updates --------------------
