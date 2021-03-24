@@ -4,6 +4,7 @@ from typing import Optional, List
 
 import argparse
 import base64
+import collections
 import gzip
 import hashlib
 import logging
@@ -374,7 +375,7 @@ def update_file_owner_mode(dest, f):
     os.chmod(dest, mode)
 
 
-def stage_file(f, configset_dir):
+def stage_file(f, staging_dir):
     target_path = f.get("path")
     if not target_path.startswith("/"):
         target_path = f"/{target_path}"
@@ -383,10 +384,10 @@ def stage_file(f, configset_dir):
 
     logging.debug(f"staging {target_path} ({abbrev_hash(target_hash)})")
 
-    dest = configset_dir + '/staging' + target_path
+    dest = staging_dir + target_path
     if is_staged(dest, target_hash):
         logging.debug(f"  already staged --> skipping")
-        return False, None
+        return False, False
 
     url = f.get("contents", {}).get("source", "")
     fetch(dest, url)
@@ -400,16 +401,31 @@ def stage_file(f, configset_dir):
         actual_hash = compute_hash(dest, target_hash)
         if actual_hash != target_hash:
             logging.warn(f"  hash mismatch ({actual_hash} != {target_hash})")
-            return True, None
+            return True, False
         else:
             logging.debug(f"  hash matches")
-    return False, target_path
+    return False, True
 
 
-def stage_systemd_unit(u, configset_dir):
-    ensure_dir_exists(configset_dir + '/staging' + DEFAULT_SYSTEMD_DIR)
+def unstage_file(target_path, staging_dir):
+    if not target_path.startswith("/"):
+        target_path = f"/{target_path}"
+
+    logging.debug(f"unstaging {target_path}")
+    dest = staging_dir + target_path
+    if os.path.exists(dest):
+        os.remove(dest)
+    if os.path.exists(dest + ".sha256"):
+        os.remove(dest + ".sha256")
+    if os.path.exists(dest + ".sha512"):
+        os.remove(dest + ".sha512")
+    return False, True
+
+
+def stage_systemd_unit(u, staging_dir):
+    ensure_dir_exists(staging_dir + DEFAULT_SYSTEMD_DIR)
     unitname = u.get("name", "unnamed.unit")
-    unitfile = configset_dir + '/staging' + DEFAULT_SYSTEMD_DIR + "/" + unitname
+    unitfile = staging_dir + DEFAULT_SYSTEMD_DIR + "/" + unitname
     with open(unitfile, 'w') as f:
         f.write(u.get("contents", ""))
 
@@ -423,19 +439,51 @@ def stage_systemd_unit(u, configset_dir):
     return {unitname: u.get("enabled")}
 
 
-def stage_files(ignition, configset_dir):
-    errors = False
-    changed_files = []
-    changed_systemd_units = {}
+def stage_updates(ignition, staging_dir):
+    has_errors = False
+    has_changes = False
+
+    ensure_dir_exists(staging_dir)
+
+    # store users
+    with open(staging_dir + "/.transmission.users.yaml", 'w') as f:
+        yaml.dump(ignition.get("passwd", {}).get("users", []), f, width=2147483647) # avoid line-breaking SSH key
+
+    # stage new and modified files
     for f in ignition.get("storage", {}).get("files", []):
-        error, changed_file = stage_file(f, configset_dir)
-        errors |= error
-        if changed_file:
-            changed_files.append(changed_file)
+        errors, changes = stage_file(f, staging_dir)
+        has_errors |= errors
+        has_changes |= changes
+
+    systemd_unit_states = {}
     for u in ignition.get("systemd", {}).get("units", []):
-        changed_systemd_unit = stage_systemd_unit(u, configset_dir)
-        changed_systemd_units.update(changed_systemd_unit)
-    return errors, changed_files, changed_systemd_units
+        systemd_unit_state = stage_systemd_unit(u, staging_dir)
+        systemd_unit_states.update(systemd_unit_state)
+    with open(staging_dir + "/.transmission.systemd_unit_states.yaml", 'w') as f:
+        for u, state in systemd_unit_states.items():
+            # writing this as array to preserve order of units
+            f.write(f"- unit: {u}\n")
+            f.write(f"  enabled: {state}\n")
+            f.write(f"  started: {state}\n") # Ignition doesn't support "started", but since it assumes reboot, started == enabled by default
+
+    # find and unstange files no longer in target configset
+    staged_files = files_to_sync(staging_dir, True)
+    target_files = [f.get("path") for f in ignition.get("storage", {}).get("files", [])]
+    for u in ignition.get("systemd", {}).get("units", []):
+        unitpath = DEFAULT_SYSTEMD_DIR + "/" + u.get("name", "unnamed.unit")
+        target_files.append(unitpath)
+        for d in u.get("dropins", []):
+            target_files.append(unitpath + ".d/" + d.get("name", "unnamed-dropin.conf"))
+    deleted_files = [f for f in staged_files if f not in target_files]
+    for deleted_file in deleted_files:
+        errors, changes = unstage_file(deleted_file, staging_dir)
+        has_errors |= errors
+        has_changes |= changes
+    with open(staging_dir + "/.transmission.deleted_files.yaml", 'w') as f:
+        for deleted_file in deleted_files:
+            f.write(f"- {deleted_file}\n")
+
+    return has_errors, has_changes
 
 
 # -------------------- applying configuration sets --------------------
@@ -469,6 +517,16 @@ def sync_configset(source, dest, to_rootfs=False, relabel=False):
         if relabel:
             run_command(["restorecon", dest + f])
         updated_files.append(f)
+
+        if to_rootfs:
+            deleted_files = []
+            with open(source + "/.transmission.deleted_files.yaml", "r") as f:
+                try:
+                    deleted_files = yaml.safe_load(f)
+                except yaml.YAMLError as e:
+                    logging.error(f"Error parsing deleted files state: {e}.")
+            for f in deleted_files:
+                run_command(["rm", dest + f])
 
     return updated_files
 
