@@ -506,6 +506,8 @@ def files_to_sync(source, to_rootfs=False):
 def sync_configset(source, dest, to_rootfs=False, relabel=False):
     updated_files = []
 
+    if dest.endswith("/"):
+        dest = dest[:-1]
     for f in files_to_sync(source, to_rootfs):
         logging.debug(f"syncing {source + f} to {dest + f}")
         ensure_dir_exists(os.path.dirname(dest + f))
@@ -518,15 +520,17 @@ def sync_configset(source, dest, to_rootfs=False, relabel=False):
             run_command(["restorecon", dest + f])
         updated_files.append(f)
 
-        if to_rootfs:
-            deleted_files = []
-            with open(source + "/.transmission.deleted_files.yaml", "r") as f:
-                try:
-                    deleted_files = yaml.safe_load(f)
-                except yaml.YAMLError as e:
-                    logging.error(f"Error parsing deleted files state: {e}.")
-            for f in deleted_files:
-                run_command(["rm", dest + f])
+    if to_rootfs:
+        deleted_files = []
+        with open(source + "/.transmission.deleted_files.yaml", "r") as f:
+            try:
+                deleted_files = yaml.safe_load(f)
+                if not deleted_files:
+                    deleted_files = []
+            except yaml.YAMLError as e:
+                logging.error(f"Error parsing deleted files state: {e}.")
+        for f in deleted_files:
+            run_command(["rm", dest + f])
 
     return updated_files
 
@@ -600,7 +604,7 @@ def get_units_requiring(action, changed_files):
 
 
 def unit_is_running(unit):
-    rc, _, _ = run_command(["echo", "systemctl", "is-active", unit])
+    rc, _, _ = run_command(["systemctl", "is-active", unit])
     return (rc == 0)
 
 
@@ -608,8 +612,7 @@ def update_systemd_units(current_configset_dir, changed_files):
     logging.info("Updating systemd units")
 
     # reload systemd to make it aware of new units
-    # run_command(["systemctl", "daemon-reload"])
-    run_command(["echo", "systemctl", "daemon-reload"])
+    run_command(["systemctl", "daemon-reload"])
 
     # load currently configured target states for units
     unit_states = collections.OrderedDict()
