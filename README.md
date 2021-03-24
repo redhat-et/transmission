@@ -6,24 +6,31 @@ It manages device configuration similar to `ostree` managing the device OS, i.e.
 
 ## Usage
 ### Installation
-Transmission comes as `.rpm` file and is meant to be included into the `ostree` image, e.g. by including it into `OSBuilder` blueprints. It will install a `systemd timer` to run periodically every X minutes.
+Transmission comes as `.rpm` file and is meant to be included into the `ostree` image, e.g. by including it into `OSBuilder` blueprints. It will install a `systemd timer` to run periodically every 5 minutes by default.
 
 Users need to provide Transmission with the URL of the device management service to query for updates, either by supplying the `transmission.url` kernel argument or by writing this URL to one of the following locations (which it will search in order): `/usr/lib/transmission-url`, `/etc/transmission-url`, `./transmission-url`.
 
 ### Running
-When run, Transmission performs a sequence of steps:
+Transmission supports the following commands:
+
+* `transmission update` queries Transmission's management endpoint for updates and stages any changes locally, before applying them to the current configuration set and activating it by syncing to the root file system.
+* `transmission rollback` makes the previous configuration set the current configuration set and activates it by syncing to the root file system.
+
+In this process, Transmission performs a sequence of steps:
 
 * update-banner: Updates the TTY banner shown at login with info on the device management URL and device ID.
-* create-users: Creates the users specified by the device manager, adding authorized SSH keys.
 * stage-files: Downloads, decodes, uncompresses, and verifies files and systemd units into a staging area.
-* update-configsets: Makes staged files the current config set, backing up the old current set beforehand.
-* sync-root: Syncs the current configuration set to the root directory (i.e. activates the configuration).
+* create-users: Creates the users specified by the device manager, adding authorized SSH keys.
+* update-configsets: Makes staged files the current config set, backing up the previous configuration set beforehand.
+* apply-configsets: Syncs the current configset to the root file system.
 * update-selinux: Updates the setenforce mode according to the configuration.
-* update-systemd-units: Reloads the systemd daemon and enables/disables units as per the configuration.
+* update-systemd-units: Reloads the systemd daemon and enables/disables/reloads/... units as per the configuration.
 
 Using the `--skip-step` and `--stop-after` options, it is possible to skip any of these steps or stop after a step, respectively. This is mainly for testing, but also to only update the banner.
 
 Using the `--root-dir` option, one can tell Transmission to sync config not to the system root (`/`) directory but a changed root.
+
+You can increase the log-level using the `--log-level` argument.
 
 ## Implementation Details
 ### Device Management Endpoint
@@ -62,7 +69,9 @@ CONFIGSET_ROOT
 ```
 Whereby `staging` contains the - possibly incomplete and later retried - set of configuration files. If the Ignition config contains verfication hashes, Transmission will use those to detect unmodified and already downloaded assets and will avoid downloading them again.
 
-When staging holds a complete, verfied set of assets, Transmission will sync them to a (temporary) `next` directory, and then start rotating configuration sets `next`🠖`current`🠖`last`🠖`lastlast`, finally deleting `lastlast`. Finally, it syncs the `current` set with the system's root dir, relabeling SELinux contexts as necessary.
+When staging holds a complete, verfied set of assets, Transmission will sync them to a (temporary) `next` directory, and then start rotating configuration sets `next` --> `current` --> `last` --> `lastlast`, finally deleting `lastlast`. Finally, it syncs the `current` set with the system's root dir, relabeling SELinux contexts as necessary.
+
+Similarly, a rollback means rotating `last` --> `current` and syncing the `current` set with the system's root dir, relabeling SELinux contexts again.
 
 ### Managing SELinux Mode
 Should a user modify `/etc/selinux/config` to change the default SELinux state of the system, Transmission calls `setenforce` to effect this change immediately (without having to reboot).
