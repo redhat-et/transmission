@@ -28,13 +28,18 @@ DEFAULT_ROOT_DIR = "/"
 # Where Transmission places systemd units
 DEFAULT_SYSTEMD_DIR = "/etc/systemd/system"
 
+# Commands supported by Transmission
+COMMANDS = [
+    "update", "rollback", "update-banner"
+]
+
 # Steps performed by Transmission
 ALLOWED_STEPS = [
     "update-banner",
+    "stage-updates",
     "create-users",
-    "stage-files",
-    "update-configsets",
-    "sync-root",
+    "update-configset",
+    "apply-configset",
     "update-selinux",
     "update-systemd-units",
 ]
@@ -435,32 +440,42 @@ def stage_files(ignition, configset_dir):
 
 # -------------------- applying configuration sets --------------------
 
-def files_to_sync(source):
+def files_to_sync(source, to_rootfs=False):
     files_to_sync = []
-    for root, subdirs, files in os.walk(source):
+    for root, _, files in os.walk(source):
         root = root[len(source):]
         for f in files:
             path = os.path.join(root, f)
+            # only sync files on allow list and not on deny list
             if matches_globs(path, SYNC_ALLOW_LIST) and not matches_globs(path, SYNC_DENY_LIST):
                 files_to_sync.append(path)
+            # in configsets (i.e. not copying to rootfs), also sync Transmission state files
+            if not to_rootfs and path.startswith(".transmission"):
+                files_to_sync.append(f"/{path}")
     return files_to_sync
 
 
-def sync_configset(source, dest, relabel=False):
-    for f in files_to_sync(source):
+def sync_configset(source, dest, to_rootfs=False, relabel=False):
+    updated_files = []
+
+    for f in files_to_sync(source, to_rootfs):
         logging.debug(f"syncing {source + f} to {dest + f}")
         ensure_dir_exists(os.path.dirname(dest + f))
-        if f"{dest+f}".startswith("/etc"):
+        if to_rootfs and f"{dest + f}".startswith("/etc"):
             # can't hardlink across devices (from /var to /etc), so copy instead
             copy_replacing(source + f, dest + f)
         else:
             hardlink_replacing(source + f, dest + f)
         if relabel:
             run_command(["restorecon", dest + f])
+        updated_files.append(f)
+
+    return updated_files
 
 
-def update_configset(configset_dir, root_dir, sync_root=True):
+def update_configset(configset_dir):
     logging.info("Updating configset")
+
     run_command(["rm", "-rf", configset_dir + "/next"])
     run_command(["mkdir", configset_dir + "/next"])
     sync_configset(configset_dir + "/staging", configset_dir + "/next")
@@ -468,13 +483,18 @@ def update_configset(configset_dir, root_dir, sync_root=True):
     run_command(["mv", configset_dir + "/last", configset_dir + "/lastlast"])
     run_command(["mv", configset_dir + "/current", configset_dir + "/last"])
     run_command(["mv", configset_dir + "/next", configset_dir + "/current"])
-    
-    if sync_root:
-        if root_dir.endswith("/"):
-            root_dir = root_dir[:-1]
-        sync_configset(configset_dir + "/current", root_dir, relabel=True)
-
     run_command(["rm", "-rf", configset_dir + "/lastlast"])
+
+
+def rollback_configset(configset_dir):
+    logging.info("Rolling back configset")
+
+    if not os.path.exists(configset_dir + "/last"):
+        return "No previous configset to roll back to."
+
+    run_command(["rm", "-rf", configset_dir + "/current"])
+    run_command(["mv", configset_dir + "/last", configset_dir + "/current"])
+    return None
 
 
 # -------------------- updating selinux --------------------
@@ -593,76 +613,98 @@ def main(args: argparse.Namespace):
         logging.warning("Unable to determine default interface, exiting")
         return
 
-    if "create-users" not in args.steps_to_skip:
-        create_users(ignition)
-        if "create-users" == args.stop_after_step:
+    if args.command == "rollback":
+        # roll back configset, making the last one current
+        error = rollback_configset(args.configset_dir)
+        if error:
+            logging.error(f"Error rolling back configset: {error}")
             return
 
-    changed_files = []
-    changed_systemd_units = {}
-    if "stage-files" not in args.steps_to_skip:
-        errors, changed_files, changed_systemd_units = stage_files(
-            ignition, args.configset_dir)
-        if errors:
-            logging.warning("One or more files couldn't be staged, exiting", file=sys.stderr)
-            return
-        if "stage-files" == args.stop_after_step:
+    elif args.command == "update":
+        # check for updates and stage them
+        ignition = get_ignition(
+            f"{transmission_url}/netboot/{platform.machine()}/ignition/{device_id}")
+        if not ignition:
+            logging.warning("Unable to retrieve Ignition config, exiting")
             return
 
-    if  "update-configsets" not in args.steps_to_skip:
-        if changed_files or changed_systemd_units:
-            sync_root = ("sync-root" not in args.steps_to_skip)
-            update_configset(
-                args.configset_dir, args.root_dir, sync_root)
-        if "update-configsets" == args.stop_after_step:
+        has_errors, has_changes = False, False
+        if "stage-updates" not in args.steps_to_skip:
+            has_errors, has_changes = stage_updates(ignition, args.configset_dir + "/staging")
+            if "stage-updates" == args.stop_after_step:
+                return
+
+        # even if some files failed download, create users
+        if "create-users" not in args.steps_to_skip:
+            create_users(ignition)
+            if "create-users" == args.stop_after_step:
+                return
+
+        # if staging failed, stop here and retry later
+        if has_errors:
+            logging.warning("One or more files couldn't be staged, exiting")
+            return
+        # if staging completed without changes, stop here and retry later
+        if not has_changes:
+            logging.info("No updates, exiting")
             return
 
-    if  "update-selinux" not in args.steps_to_skip:
-        if changed_files and "/etc/selinux/config" in changed_files:
-            update_selinux()
-        if "update-selinux" == args.stop_after_step:
+        # if staging completed with changes, update the current config set
+        if  "update-configset" not in args.steps_to_skip:
+            update_configset(args.configset_dir)
+            if "update-configset" == args.stop_after_step:
+                return
+    else:
+        return
+
+    # apply current configset and update selinux and systemd accordingly
+    if  "apply-configset" not in args.steps_to_skip:
+        updated_files = sync_configset(args.configset_dir + "/current", args.root_dir, to_rootfs=True, relabel=True)
+        if "apply-configsets" == args.stop_after_step:
             return
 
-    if  "update-systemd-units" not in args.steps_to_skip:
-        if changed_systemd_units:
-            update_systemd_units(changed_files, changed_systemd_units)
-        if "update-systemd-units" == args.stop_after_step:
-            return
+        if  "update-selinux" not in args.steps_to_skip:
+            if "/etc/selinux/config" in updated_files:
+                update_selinux()
+            if "update-selinux" == args.stop_after_step:
+                return
 
-
-def step(arg):
-    if arg not in ALLOWED_STEPS:
-        raise argparse.ArgumentTypeError( 
-            f"Step must be one of {ALLOWED_STEPS}, got '{arg}'.") 
-    return arg
+        if  "update-systemd-units" not in args.steps_to_skip:
+            update_systemd_units(args.configset_dir + "/current", updated_files)
+            if "update-systemd-units" == args.stop_after_step:
+                return
 
 
 def get_args(argv: List[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Run Transmission",
-        epilog=f"Valid steps are {ALLOWED_STEPS}."
-    )
+    parser = argparse.ArgumentParser()
 
+    parser.add_argument(
+        "command",
+        choices=COMMANDS,
+        help="update/rollback the current configset or only update banner and exit",
+    )
     parser.add_argument(
         "--skip-step",
         dest="steps_to_skip",
         action="append",
-        type=step,
-        help=f"Skip this step.",
+        type=str,
+        choices=ALLOWED_STEPS,
+        help=f"skip this step (can be used multiple times)",
     )
     parser.add_argument(
         "--stop-after",
         dest="stop_after_step",
         action="store",
-        type=step,
-        help=f"Stop after this step.",
+        type=str,
+        choices=ALLOWED_STEPS,
+        help=f"stop after this step",
     )
     parser.add_argument(
         "--configset-dir",
         dest="configset_dir",
         action="store",
         type=str,
-        help=f"Directory for storing config sets.",
+        help=f"directory for storing config sets",
         default=DEFAULT_TRANSMISSION_CONFIGSET_DIR,
     )
     parser.add_argument(
@@ -670,7 +712,7 @@ def get_args(argv: List[str]) -> argparse.Namespace:
         dest="root_dir",
         action="store",
         type=str,
-        help=f"Root directory to sync config sets to.",
+        help=f"root directory to sync config sets to",
         default=DEFAULT_ROOT_DIR,
     )
     parser.add_argument(
@@ -678,7 +720,8 @@ def get_args(argv: List[str]) -> argparse.Namespace:
         dest="log_level",
         action="store",
         type=str,
-        help=f"Log level (error, warning, info, debug).",
+        choices=["error", "warning", "info", "debug"],
+        help=f"log level to use in log output",
         default="info",
     )
 
