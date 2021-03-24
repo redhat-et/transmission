@@ -135,7 +135,7 @@ def run_command(args):
     )
     logging.debug(f"  return code: {result.returncode}")
     logging.debug(f"  stdout: '{result.stdout}'")
-    logging.debug(f"  stderr: '{result.stderr}'")
+    logging.debug(f"    stderr: '{result.stderr}'")
     return result.returncode, result.stdout, result.stderr
 
 
@@ -334,7 +334,6 @@ def check_hash(dest, target_hash):
     return False
 
 
-
 # a file is considered 'staged' if it
 #  * exists in the right path/filename under the staging dir and
 #  * if a target_hash has been provided, the file's hash matches the target
@@ -364,7 +363,7 @@ def update_file_owner_mode(dest, f):
 
     logging.debug(f"  change file owner to {user}:{group}, mode to {mode:#o}")
     if int(mode) > 0o777:
-        logging.debug(f"    warning: did you forget to specify file mode in _decimal_?")
+        logging.warning(f"    warning: did you forget to specify file mode in _decimal_?")
 
     shutil.chown(dest, user=user, group=group)
     os.chmod(dest, mode)
@@ -481,6 +480,7 @@ def update_configset(configset_dir, root_dir, sync_root=True):
 # -------------------- updating selinux --------------------
 
 def update_selinux():
+    logging.info("Updating SELinux")
     if os.path.exists("/etc/selinux/config"):
         enforce = 1
         with open("/etc/selinux/config", "r") as f:
@@ -507,13 +507,13 @@ def get_units_requiring(action, changed_files):
         try:
             reqs = yaml.safe_load(f)
         except yaml.YAMLError as e:
-            logging.error(f"Error parsing {reqs_file}: {e} --> skipping.", file=sys.stderr)
+            logging.error(f"Error parsing {reqs_file}: {e} --> skipping.")
             return units
 
     for unit in reqs.keys():
         globs = reqs.get(unit, [])
         if not isinstance(globs, list):
-            logging.error(f"Error parsing {reqs_file}: unit {unit} needs to map to list of globs --> skipping", file=sys.stderr)
+            logging.error(f"Error parsing {reqs_file}: unit {unit} needs to map to list of globs --> skipping")
             continue
         for f in changed_files:
             if matches_globs(f, globs):
@@ -569,31 +569,28 @@ def update_banner(url: str, device_id: Optional[str]):
 # -------------------- argparse and main --------------------
 
 def main(args: argparse.Namespace):
+    # initialize logging
     numeric_log_level = getattr(logging, args.log_level.upper(), None)
     if not isinstance(numeric_log_level, int):
         raise ValueError('Invalid log level: %s' % args.log_level)
     logging.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', level=numeric_log_level)
 
+    # determine URL of the transmission server and the client's device ID
     transmission_url = get_transmission_url()
     if not transmission_url:
-        logging.error("No Transmission URL configured, exiting", file=sys.stderr)
+        logging.error("No Transmission URL configured, exiting")
         return
 
     device_id = get_device_id()
 
+    # even if the device ID isn't available yet, we can update the banner
     if "update-banner" not in args.steps_to_skip:
         update_banner(transmission_url, device_id)
         if "update-banner" == args.stop_after_step:
             return
 
     if device_id is None:
-        logging.warning("Unable to determine default interface, exiting", file=sys.stderr)
-        return
-
-    ignition = get_ignition(
-        f"{transmission_url}/netboot/{platform.machine()}/ignition/{device_id}")
-    if ignition is None:
-        logging.warning("Unable to retrieve Ignition config, exiting", file=sys.stderr)
+        logging.warning("Unable to determine default interface, exiting")
         return
 
     if "create-users" not in args.steps_to_skip:
