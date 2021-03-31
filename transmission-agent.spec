@@ -1,5 +1,5 @@
 Name:          transmission-agent
-Version:       0.1.3
+Version:       0.1.4
 Release:       1%{?dist}
 Summary:       An experimental device management agent for ostree-based Linux operating systems
 License:       Apache License, Version 2.0
@@ -34,6 +34,8 @@ ln -s /run/transmission-banner %{buildroot}%{_sysconfdir}/issue.d/transmission.i
 %{_unitdir}/*
 
 %changelog
+* Wed Mar 31 2021 Frank Zdarsky <fzdarsky@redhat.com> 0.1.4-1
+- Added a few symlinked dirs to sync allow list
 * Thu Mar 24 2021 Frank Zdarsky <fzdarsky@redhat.com> 0.1.3-1
 - Added rollback, improved handling of systemd and logging
 * Thu Mar 11 2021 Frank Zdarsky <fzdarsky@redhat.com> 0.1-1

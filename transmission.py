@@ -48,7 +48,10 @@ ALLOWED_STEPS = [
 # Transmission only syncs to /etc and /var
 SYNC_ALLOW_LIST = [
     "/etc/*",
-    "/var/*"
+    "/var/*",
+    "/root/*", # links to /var/roothome
+    "/usr/local/*", # links to /var/usrlocal
+    "/opt/*", # links to /var/opt
 ]
 
 # Transmission ignores hash files, changes to its state directory, and others
