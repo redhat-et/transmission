@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from typing import Optional, List
+from urllib.error import HTTPError
 
 import argparse
 import base64
@@ -171,9 +172,11 @@ def copy_replacing(source, dest):
 
 def get_ignition(url):
     logging.info(f"Requesting from {url}")
-    with urllib.request.urlopen(url) as f:
-        return json.loads(f.read().decode())
-
+    try:
+        with urllib.request.urlopen(url) as f:
+            return json.loads(f.read().decode())
+    except HTTPError as e:
+        raise e
 
 def matches_glob(string, glob="*"):
     parts = glob.split("*")
@@ -735,10 +738,11 @@ def main(args: argparse.Namespace):
 
     elif args.command == "update":
         # check for updates and stage them
-        ignition = get_ignition(
-            f"{transmission_url}/netboot/{platform.machine()}/ignition/{device_id}")
-        if not ignition:
-            logging.warning("Unable to retrieve Ignition config, exiting")
+        try:
+            ignition = get_ignition(
+                f"{transmission_url}/netboot/{platform.machine()}/ignition/{device_id}")
+        except HTTPError as e:
+            logging.warning(f"Unable to retrieve Ignition config:\n{e.read().decode()}")
             return
 
         has_errors, has_changes = False, False
