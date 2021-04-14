@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 from typing import Optional, List
-from urllib.error import HTTPError
 
 import argparse
 import base64
@@ -18,6 +17,7 @@ import stat
 import subprocess
 import sys
 import urllib.request
+import urllib.error
 import yaml
 
 
@@ -172,11 +172,8 @@ def copy_replacing(source, dest):
 
 def get_ignition(url):
     logging.info(f"Requesting from {url}")
-    try:
-        with urllib.request.urlopen(url) as f:
-            return json.loads(f.read().decode())
-    except HTTPError as e:
-        raise e
+    with urllib.request.urlopen(url) as f:
+        return json.loads(f.read().decode())
 
 def matches_glob(string, glob="*"):
     parts = glob.split("*")
@@ -741,9 +738,16 @@ def main(args: argparse.Namespace):
         try:
             ignition = get_ignition(
                 f"{transmission_url}/netboot/{platform.machine()}/ignition/{device_id}")
-        except HTTPError as e:
-            logging.warning(f"Unable to retrieve Ignition config:\n{e.read().decode()}")
+        except urllib.error.HTTPError as e:
+            logging.error(f"Response Error [code: {e.code}] {e.reason}: {e.read().decode()}")
             return
+        except urllib.error.URLError as e:
+            logging.error(f"Connection error: {e}")
+            return
+        except (json.JSONDecodeError, TypeError) as e:
+            logging.error(f"Decoding json error: {e}")
+            return
+
 
         has_errors, has_changes = False, False
         if "stage-updates" not in args.steps_to_skip:
