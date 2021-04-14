@@ -694,11 +694,15 @@ def update_systemd_units(current_configset_dir, changed_files):
 # -------------------- banner updates --------------------
 
 def update_banner(url: str, device_id: Optional[str]):
+    if url is None:
+        action = "No Transmission URL configured"
+    else:
+        action = f"Using {url}"
     if device_id is None:
         device_id = "device ID not yet known"
     with open("/run/transmission-banner", "w") as bannerfile:
         bannerfile.write(
-            f"Using {url} to provision this device ({device_id})\n\n"
+            f"{action} to provision this device ({device_id})\n\n"
         )
 
 
@@ -713,10 +717,6 @@ def main(args: argparse.Namespace):
 
     # determine URL of the transmission server and the client's device ID
     transmission_url = get_transmission_url()
-    if not transmission_url:
-        logging.error("No Transmission URL configured, exiting")
-        return
-
     device_id = get_device_id()
 
     # even if the device ID isn't available yet, we can update the banner
@@ -737,6 +737,11 @@ def main(args: argparse.Namespace):
             return
 
     elif args.command == "update":
+        # for updates, need configured Transmission URL
+        if not transmission_url:
+            logging.error("No Transmission URL configured to check for updates, exiting")
+            return
+
         # check for updates and stage them
         try:
             ignition = get_ignition(
