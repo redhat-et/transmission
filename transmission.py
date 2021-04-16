@@ -175,6 +175,15 @@ def get_ignition(url):
     with urllib.request.urlopen(url) as f:
         return json.loads(f.read().decode())
 
+
+def get_ignition_local(path):
+    logging.info(f"Parsing local ignition file {path}")
+    with open(path) as f:
+        ign = json.load(f)
+        f.close()
+    return ign
+
+
 def matches_glob(string, glob="*"):
     parts = glob.split("*")
     if parts[0] and not string.startswith(parts[0]):
@@ -741,8 +750,11 @@ def main(args: argparse.Namespace):
 
         # check for updates and stage them
         try:
-            ignition = get_ignition(
-                f"{transmission_url}/netboot/{platform.machine()}/ignition/{device_id}")
+            if args.ignition_override:
+                ignition = get_ignition_local(args.ignition_override)
+            else:
+                ignition = get_ignition(
+                    f"{transmission_url}/netboot/{platform.machine()}/ignition/{device_id}")
         except urllib.error.HTTPError as e:
             logging.error(f"Response Error [code: {e.code}] {e.reason}: {e.read().decode()}")
             return
@@ -752,7 +764,9 @@ def main(args: argparse.Namespace):
         except (json.JSONDecodeError, TypeError) as e:
             logging.error(f"Decoding json error: {e}")
             return
-
+        except (FileNotFoundError, IsADirectoryError) as e:
+            logging.error(f"failed to open ignition override file: {e}")
+            return
 
         has_errors, has_changes = False, False
         if "stage-updates" not in args.steps_to_skip:
@@ -849,6 +863,14 @@ def get_args(argv: List[str]) -> argparse.Namespace:
         choices=["error", "warning", "info", "debug"],
         help=f"log level to use in log output",
         default="info",
+    )
+    parser.add_argument(
+        "--ignition",
+        dest="ignition_override",
+        action="store",
+        type=str,
+        help="local ignition file path.  preempts remote get",
+        default=""
     )
 
     args = parser.parse_args(argv)
