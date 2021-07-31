@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from string import Template
 from typing import Optional, List
 
 import argparse
@@ -7,17 +8,20 @@ import base64
 import collections
 import gzip
 import hashlib
-import logging
 import json
+import logging
 import os
 import platform
 import pwd
+import re
 import shutil
 import stat
 import subprocess
 import sys
-import urllib.request
 import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
 import yaml
 
 
@@ -29,6 +33,9 @@ DEFAULT_TRANSMISSION_CONFIGSET_DIR = "/var/lib/transmission/configsets"
 DEFAULT_ROOT_DIR = "/"
 # Where Transmission places systemd units
 DEFAULT_SYSTEMD_DIR = "/etc/systemd/system"
+
+# Seed for making an application-specific machine-id
+TRANSMISSION_SEED = "7f16ba539046995e2264d3a33526c53f"
 
 # Commands supported by Transmission
 COMMANDS = [
@@ -100,8 +107,12 @@ def get_interface_mac(interface: Optional[str]) -> str:
         return addrfile.read().strip()
 
 
-def get_device_id():
-    return get_interface_mac(get_primary_interface())
+def get_uuid():
+    with open('/etc/machine-id', 'r') as file:
+        machineid = file.read().replace('\n', '')
+        machineid = hashlib.sha256((TRANSMISSION_SEED+machineid).encode('utf-8')).hexdigest()[:32]
+        return uuid.UUID(machineid)
+    return None
 
 
 def get_transmission_url_cmdline() -> Optional[str]:
@@ -113,7 +124,7 @@ def get_transmission_url_cmdline() -> Optional[str]:
         if len(args) != 2:
             continue
         key, val = args
-        if key == "transmission.url" or key == "zezere.url":
+        if key == "transmission.url":
             return val.strip()
 
 
@@ -131,6 +142,30 @@ def get_transmission_url():
         if os.path.exists(path):
             with open(path, "r") as urlfile:
                 return urlfile.read().strip()
+
+
+def render_transmission_url(url_template):
+    if url_template is None:
+        return None
+    d = dict(
+        arch = platform.machine(),
+        mac  = get_interface_mac(get_primary_interface()),
+        uuid = get_uuid()
+    )
+    return Template(url_template).safe_substitute(d)
+
+
+def sanitized_url(url):
+    try:
+        o = urllib.parse.urlparse(url)
+        if all([o.scheme, o.netloc, o.path]):
+            path = urllib.parse.quote(o.path)
+            query = urllib.parse.quote(o.query)
+            return urllib.parse.urlunsplit((o.scheme, o.netloc, path, query, ""))
+        else:
+            return None
+    except:
+        return None
 
 
 # -------------------- helpers --------------------
@@ -690,17 +725,13 @@ def update_systemd_units(current_configset_dir, changed_files):
 
 # -------------------- banner updates --------------------
 
-def update_banner(url: str, device_id: Optional[str]):
+def update_banner(url):
     if url is None:
         action = "No Transmission URL configured"
     else:
-        action = f"Using {url}"
-    if device_id is None:
-        device_id = "device ID not yet known"
+        action = f"Using {url} to configure this device\n\n"
     with open("/run/transmission-banner", "w") as bannerfile:
-        bannerfile.write(
-            f"{action} to provision this device ({device_id})\n\n"
-        )
+        bannerfile.write(action)
 
 
 # -------------------- argparse and main --------------------
@@ -714,17 +745,13 @@ def main(args: argparse.Namespace):
 
     # determine URL of the transmission server and the client's device ID
     transmission_url = get_transmission_url()
-    device_id = get_device_id()
+    transmission_url = render_transmission_url(transmission_url)
 
     # even if the device ID isn't available yet, we can update the banner
     if "update-banner" not in args.steps_to_skip:
-        update_banner(transmission_url, device_id)
+        update_banner(transmission_url)
         if "update-banner" == args.stop_after_step:
             return
-
-    if device_id is None:
-        logging.warning("Unable to determine default interface, exiting")
-        return
 
     if args.command == "rollback":
         # roll back configset, making the last one current
@@ -735,14 +762,17 @@ def main(args: argparse.Namespace):
 
     elif args.command == "update":
         # for updates, need configured Transmission URL
-        if not transmission_url:
-            logging.error("No Transmission URL configured to check for updates, exiting")
+        if transmission_url is None:
+            logging.error(f"Transmission URL not configured, exiting")
+            return
+        sanitized_transmission_url = sanitized_url(transmission_url)
+        if sanitized_transmission_url is None:
+            logging.error(f"Transmission URL {transmission_url} is not valid, exiting")
             return
 
         # check for updates and stage them
         try:
-            ignition = get_ignition(
-                f"{transmission_url}/netboot/{platform.machine()}/ignition/{device_id}")
+            ignition = get_ignition(sanitized_transmission_url)
         except urllib.error.HTTPError as e:
             logging.error(f"Response Error [code: {e.code}] {e.reason}: {e.read().decode()}")
             return

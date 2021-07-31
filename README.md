@@ -34,7 +34,12 @@ You can increase the log-level using the `--log-level` argument.
 
 ## Implementation Details
 ### Device Management Endpoint
-Transmission will periodically query (via HTTP GET) the provided URL under the endpoint `{base_url}/netboot/{arch}/ignition/{device_id}`, whereby `{arch}` is the device's platform (output of `uname -i`) and `{device_id}` is a device identifier (currently the MAC address of the device's primary network interface). This is so it can serve as a drop-in replacement for Fedora's `zezere-ignition` agent.
+Transmission will periodically query (via HTTP GET) the provided URL, making the following variable substitutions:
+* `${arch}`: the device's platform (output of `uname -i`)
+* `${mac}`: the MAC address of the device's primary interface
+* `${uuid}`: a UUID generated based on `/etc/machine-id`
+
+For example, to serve as drop-in replacement for Fedora's `zezere-ignition` agent, one would use a URL like `http://my.zezere-service.net/netboot/${arch}/ignition/${mac}`.
 
 ### Device Management Protocol
 Transmission currently uses the `Ignition` protocol for transporting changes, more specifically a subset of the Ignition v3.2.0 spec. Ignition was designed for machine provisioning and to be run from initramfs, where it can apply changes (like disk partitioning) that aren't easily done post-provisioning.
