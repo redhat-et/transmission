@@ -42,7 +42,9 @@ Transmission will periodically query (via HTTP GET) the provided URL, making the
 For example, to serve as drop-in replacement for Fedora's `zezere-ignition` agent, one would use a URL like `http://my.zezere-service.net/netboot/${arch}/ignition/${mac}`.
 
 ### Device Management Protocol
-Transmission currently uses the `Ignition` protocol for transporting changes, more specifically a subset of the Ignition v3.2.0 spec. Ignition was designed for machine provisioning and to be run from initramfs, where it can apply changes (like disk partitioning) that aren't easily done post-provisioning.
+Transmission currently supports two protocols for transporting changes:
+
+By default, it uses the `Ignition` protocol for transporting changes, more specifically a subset of the Ignition v3.2.0 spec. Ignition was designed for machine provisioning and to be run from initramfs, where it can apply changes (like disk partitioning) that aren't easily done post-provisioning.
 
 Transmission is currently limited to processing the following Ignition objects:
 ```
@@ -61,6 +63,8 @@ systemd/units/contents/dropins
 passwd/users/name
 passwd/users/sshAuthorizedKeys
 ```
+
+Alternatively, if the URL points to a repo on `github.com`, Transmission clones that repo, optionally checks out the ref provided by the `?ref=` parameter and then periodically pulls updates. Contents of that repo are assumed to be relative to the root filesystem. Files ending in `.meta` are interpreted as Ignition file spec and can be used to download additional assets.
 
 ### Managing Configuration Sets
 Transmission maintains the following diretory structure under `CONFIGSET_ROOT` (by default `/var/opt/transmission/configsets`):
