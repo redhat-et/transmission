@@ -64,6 +64,7 @@ SYNC_ALLOW_LIST = [
 
 # Transmission ignores hash files, changes to its state directory, and others
 SYNC_DENY_LIST = [
+    "*.meta",
     "*.sha256",
     "*.sha512",
     "*/.gitkeep",
@@ -170,12 +171,13 @@ def sanitized_url(url):
 
 # -------------------- helpers --------------------
 
-def run_command(args):
+def run_command(args, working_dir=None):
     logging.debug(f"running command {args}")
     result = subprocess.run(
         args,
-        capture_output=True,
-        text=True,
+        cwd=working_dir,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        universal_newlines=True,
         env=os.environ.copy()
     )
     logging.debug(f"  return code: {result.returncode}")
@@ -304,6 +306,14 @@ def fetch(dest, url):
         logging.debug(f"  fetch: unkown scheme {scheme} --> skipping!")
 
 
+def decompress_tar_gzip(dest):
+    decompress_gzip(dest)
+    logging.debug(f"  decompress (tar)")
+    shutil.move(dest, dest + ".tar")
+    run_command(["tar", "xf", dest + ".tar", os.path.basename(dest)], os.path.dirname(dest))
+    os.remove(dest + ".tar")
+
+
 def decompress_gzip(dest):
     logging.debug(f"  decompress (gzip)")
     with gzip.open(dest, 'rb') as f_in:
@@ -317,6 +327,7 @@ def decompress_null(dest):
 
 
 decompressors = {
+    'tar+gzip': decompress_tar_gzip,
     'gzip': decompress_gzip,
     'null': decompress_null
 }
@@ -450,6 +461,8 @@ def unstage_file(target_path, staging_dir):
         target_path = f"/{target_path}"
 
     logging.debug(f"unstaging {target_path}")
+    if target_path.endswith(".meta"):
+        target_path = target_path[:-len(".meta")]
     dest = staging_dir + target_path
     if os.path.exists(dest):
         os.remove(dest)
@@ -457,6 +470,8 @@ def unstage_file(target_path, staging_dir):
         os.remove(dest + ".sha256")
     if os.path.exists(dest + ".sha512"):
         os.remove(dest + ".sha512")
+    if os.path.exists(dest + ".meta"):
+        os.remove(dest + ".meta")
     return False, True
 
 
@@ -523,6 +538,76 @@ def stage_updates(ignition, staging_dir):
 
     return has_errors, has_changes
 
+
+def stage_updates_from_github(transmission_url, staging_dir):
+    has_errors = False
+    has_changes = False
+
+    ensure_dir_exists(staging_dir)
+
+    u = urllib.parse.urlparse(transmission_url)
+    repo = f"{u.scheme}://{u.netloc}{u.path}"
+    ref  = u.params["ref"] if "ref" in u.params else ""
+
+    # if repo exists but is different from configure, clear staging area
+    rc, stdout, stderr = run_command(["git", "--git-dir", staging_dir + "/.git", "config", "--get", "remote.origin.url"])
+    if rc == 0 and stdout.rstrip() != repo:
+        logging.info(f"Repo changed from {repo} to {stdout.rstrip()}. Deleting old repo.")
+        run_command(["rm", "-r", staging_dir])
+        ensure_dir_exists(staging_dir)
+
+    # if repo hasn't been cloned yet, clone it
+    if not os.path.exists(staging_dir + "/.git"):
+        logging.info(f"Cloning {repo}.")
+        rc, stdout, stderr = run_command(["git", "clone", repo, staging_dir])
+        if rc != 0:
+            logging.error(f"Failed to clone {repo}: {stderr}")
+            return True, False
+        run_command(["git", "-C", staging_dir, "config", "pull.ff", "only"])
+
+    # checkout ref if exists
+    if ref != "":
+        logging.info(f"Trying to check out {ref}.")
+        rc, stdout, stderr = run_command(["git", "-C", staging_dir, "checkout", ref])
+        if rc != 0:
+            logging.error(f"Failed to check out {ref}: {stderr}")
+            return True, False
+
+    # pull updates
+    logging.info(f"Pulling updates.")
+    rc, stdout, stderr = run_command(["git", "-C", staging_dir, "pull"])
+    if stdout.startswith("Updating"):
+        has_changes = True
+
+    # scan for *.meta files and stage them
+    for root, dirs, files in os.walk(staging_dir, topdown=True):
+        dirs[:] = [d for d in dirs if d not in [".git"]]
+        for file in files:
+            if file.endswith(".meta"):
+                with open(os.path.join(root, file), "r") as f:
+                    try:
+                        meta = yaml.safe_load(f)
+                        errors, changes = stage_file(meta, staging_dir)
+                        has_errors |= errors
+                        has_changes |= changes
+                    except yaml.YAMLError as e:
+                        logging.error(f"Error parsing file meta data: {e}.")
+
+    # find and unstange files no longer in target configset
+    rc, stdout, stderr = run_command(["git", "-C", staging_dir, "ls-tree", "HEAD", "--name-only", "--full-tree", "-r"])
+    if rc == 0:
+        target_files = ["/"+f for f in str.splitlines(stdout)]
+        staged_files = files_to_sync(staging_dir, True)
+        deleted_files = [f for f in staged_files if f not in target_files and f+".meta" not in target_files]
+        for deleted_file in deleted_files:
+            errors, changes = unstage_file(deleted_file, staging_dir)
+            has_errors |= errors
+            has_changes |= changes
+        with open(staging_dir + "/.transmission.deleted_files.yaml", 'w') as f:
+            for deleted_file in deleted_files:
+                f.write(f"- {deleted_file}\n")
+
+    return has_errors, has_changes
 
 # -------------------- applying configuration sets --------------------
 
@@ -771,24 +856,31 @@ def main(args: argparse.Namespace):
             return
 
         # check for updates and stage them
-        try:
-            ignition = get_ignition(sanitized_transmission_url)
-        except urllib.error.HTTPError as e:
-            logging.error(f"Response Error [code: {e.code}] {e.reason}: {e.read().decode()}")
-            return
-        except urllib.error.URLError as e:
-            logging.error(f"Connection error: {e}")
-            return
-        except (json.JSONDecodeError, TypeError) as e:
-            logging.error(f"Decoding json error: {e}")
-            return
-
-
-        has_errors, has_changes = False, False
-        if "stage-updates" not in args.steps_to_skip:
-            has_errors, has_changes = stage_updates(ignition, args.configset_dir + "/staging")
-            if "stage-updates" == args.stop_after_step:
+        if "://github.com" in sanitized_transmission_url:
+            ignition = {}
+            has_errors, has_changes = False, False
+            if "stage-updates" not in args.steps_to_skip:
+                has_errors, has_changes = stage_updates_from_github(sanitized_transmission_url, args.configset_dir + "/staging")
+                if "stage-updates" == args.stop_after_step:
+                    return
+        else:
+            try:
+                ignition = get_ignition(sanitized_transmission_url)
+            except urllib.error.HTTPError as e:
+                logging.error(f"Response Error [code: {e.code}] {e.reason}: {e.read().decode()}")
                 return
+            except urllib.error.URLError as e:
+                logging.error(f"Connection error: {e}")
+                return
+            except (json.JSONDecodeError, TypeError) as e:
+                logging.error(f"Decoding json error: {e}")
+                return
+
+            has_errors, has_changes = False, False
+            if "stage-updates" not in args.steps_to_skip:
+                has_errors, has_changes = stage_updates(ignition, args.configset_dir + "/staging")
+                if "stage-updates" == args.stop_after_step:
+                    return
 
         # even if some files failed download, create users
         if "create-users" not in args.steps_to_skip:
