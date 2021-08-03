@@ -6,6 +6,7 @@ from typing import Optional, List
 import argparse
 import base64
 import collections
+import errno
 import gzip
 import hashlib
 import json
@@ -571,7 +572,7 @@ def stage_updates_from_github(transmission_url, staging_dir):
         logging.info(f"Trying to check out {ref}.")
         rc, stdout, stderr = run_command(["git", "-C", staging_dir, "checkout", ref])
         if rc != 0:
-            logging.error(f"Failed to check out {ref}: {stderr}")
+            logging.warning(f"Could not check out {ref}: {stderr}. Exiting.")
             return True, False
 
     # pull updates
@@ -816,8 +817,11 @@ def update_banner(url):
         action = "No Transmission URL configured"
     else:
         action = f"Using {url} to configure this device\n\n"
-    with open("/run/transmission-banner", "w") as bannerfile:
-        bannerfile.write(action)
+    try:
+        with open("/run/transmission-banner", "w") as bannerfile:
+            bannerfile.write(action)
+    except IOError as e:
+        sys.exit(f"Error writing banner file: {e}. Exiting.")
 
 
 # -------------------- argparse and main --------------------
@@ -841,6 +845,7 @@ def main(args: argparse.Namespace):
 
     if args.command == "rollback":
         # roll back configset, making the last one current
+        logging.info(f"Running rollback.")
         error = rollback_configset(args.configset_dir)
         if error:
             logging.error(f"Error rolling back configset: {error}")
@@ -854,6 +859,7 @@ def main(args: argparse.Namespace):
         if transmission_url is None:
             logging.error(f"Transmission URL {transmission_url} is not valid, exiting")
             return
+        logging.info(f"Running update, URL is {transmission_url}.")
 
         # check for updates and stage them
         if "://github.com" in transmission_url:
@@ -865,7 +871,7 @@ def main(args: argparse.Namespace):
                     return
         else:
             try:
-                ignition = get_ignition(sanitized_transmission_url)
+                ignition = get_ignition(transmission_url)
             except urllib.error.HTTPError as e:
                 logging.error(f"Response Error [code: {e.code}] {e.reason}: {e.read().decode()}")
                 return
