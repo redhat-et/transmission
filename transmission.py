@@ -570,6 +570,7 @@ def stage_updates_from_github(transmission_url, staging_dir):
     # checkout ref if exists
     if ref != "":
         logging.info(f"Trying to check out {ref}.")
+        run_command(["git", "-C", staging_dir, "fetch"])
         rc, stdout, stderr = run_command(["git", "-C", staging_dir, "checkout", ref])
         if rc != 0:
             logging.warning(f"Could not check out {ref}: {stderr}. Exiting.")
