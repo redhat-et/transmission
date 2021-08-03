@@ -547,7 +547,8 @@ def stage_updates_from_github(transmission_url, staging_dir):
 
     u = urllib.parse.urlparse(transmission_url)
     repo = f"{u.scheme}://{u.netloc}{u.path}"
-    ref  = u.params["ref"] if "ref" in u.params else ""
+    query = urllib.parse.parse_qs(u.query)
+    ref = next(iter(query.get("ref", [])), "")
 
     # if repo exists but is different from configure, clear staging area
     rc, stdout, stderr = run_command(["git", "--git-dir", staging_dir + "/.git", "config", "--get", "remote.origin.url"])
@@ -850,17 +851,16 @@ def main(args: argparse.Namespace):
         if transmission_url is None:
             logging.error(f"Transmission URL not configured, exiting")
             return
-        sanitized_transmission_url = sanitized_url(transmission_url)
-        if sanitized_transmission_url is None:
+        if transmission_url is None:
             logging.error(f"Transmission URL {transmission_url} is not valid, exiting")
             return
 
         # check for updates and stage them
-        if "://github.com" in sanitized_transmission_url:
+        if "://github.com" in transmission_url:
             ignition = {}
             has_errors, has_changes = False, False
             if "stage-updates" not in args.steps_to_skip:
-                has_errors, has_changes = stage_updates_from_github(sanitized_transmission_url, args.configset_dir + "/staging")
+                has_errors, has_changes = stage_updates_from_github(transmission_url, args.configset_dir + "/staging")
                 if "stage-updates" == args.stop_after_step:
                     return
         else:
