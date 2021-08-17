@@ -34,6 +34,8 @@ ln -s /run/transmission-banner %{buildroot}%{_sysconfdir}/issue.d/transmission.i
 %{_unitdir}/*
 
 %changelog
+* Tue Aug 17 2021 Frank Zdarsky <fzdarsky@redhat.com> 0.1.6-1
+- Added subscription id and insights id
 * Mon Aug 2 2021 Frank Zdarsky <fzdarsky@redhat.com> 0.1.5-1
 - Added fetching from GitHub
 * Wed Mar 31 2021 Frank Zdarsky <fzdarsky@redhat.com> 0.1.4-1

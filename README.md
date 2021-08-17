@@ -38,6 +38,8 @@ Transmission will periodically query (via HTTP GET) the provided URL, making the
 * `${arch}`: the device's platform (output of `uname -i`)
 * `${mac}`: the MAC address of the device's primary interface
 * `${uuid}`: a UUID generated based on `/etc/machine-id`
+* `${subscriptionid}`: the Red Hat Subscription Manager ID (from `subscription-manager identity`)
+* `${insightsid}`: the Red Hat Insights ID (from `/etc/insights-client/machine-id`)
 
 For example, to serve as drop-in replacement for Fedora's `zezere-ignition` agent, one would use a URL like `http://my.zezere-service.net/netboot/${arch}/ignition/${mac}`.
 

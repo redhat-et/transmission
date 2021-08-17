@@ -109,11 +109,38 @@ def get_interface_mac(interface: Optional[str]) -> str:
         return addrfile.read().strip()
 
 
+def get_mac():
+    return get_interface_mac(get_primary_interface())
+
+
 def get_uuid():
     with open('/etc/machine-id', 'r') as file:
         machineid = file.read().replace('\n', '')
         machineid = hashlib.sha256((TRANSMISSION_SEED+machineid).encode('utf-8')).hexdigest()[:32]
-        return uuid.UUID(machineid)
+        return str(uuid.UUID(machineid))
+    return None
+
+
+def get_subscription_id():
+    if os.geteuid() != 0:
+        logging.debug("Could not fetch subscription manager identity: not running as root")
+        return None
+
+    rc, stdout, stderr = run_command(["subscription-manager", "identity"])
+    if rc != 0:
+        logging.debug(f"Could not fetch subscription manager identity: {stderr}")
+        return None
+
+    for line in stdout.split('\n'):
+        fields = line.split(':')
+        if len(fields) == 2 and fields[0] == "system identity":
+            return fields[1].strip()
+    return None
+
+
+def get_insights_id():
+    with open('/etc/insights-client/machine-id', 'r') as file:
+        return file.read().replace('\n', '')
     return None
 
 
@@ -144,17 +171,36 @@ def get_transmission_url():
         if os.path.exists(path):
             with open(path, "r") as urlfile:
                 return urlfile.read().strip()
+    return None
+
+
+substitutions = {
+    'arch': platform.machine,
+    'mac': get_mac,
+    'uuid': get_uuid,
+    'subscriptionid': get_subscription_id,
+    'insightsid': get_insights_id
+}
 
 
 def render_transmission_url(url_template):
     if url_template is None:
         return None
-    d = dict(
-        arch = platform.machine(),
-        mac  = get_interface_mac(get_primary_interface()),
-        uuid = get_uuid()
-    )
-    return Template(url_template).safe_substitute(d)
+
+    vars = re.findall(r'\${([\w]+)}', url_template)
+    for v in vars:
+        if v not in substitutions:
+            logging.error(f"Transmission URL {url_template} contains unsupported variable '{v}'.")
+            return None
+        value = substitutions[v]()
+        if not value:
+            return None
+        url_template = re.sub(r'\${' + v + r'}', value, url_template)
+    if any((c in url_template) for c in ['$', '{', '}']):
+        logging.error(f"Transmission URL {url_template} contains unsupported characters.")
+        return None
+
+    return url_template
 
 
 def sanitized_url(url):
@@ -183,7 +229,7 @@ def run_command(args, working_dir=None):
     )
     logging.debug(f"  return code: {result.returncode}")
     logging.debug(f"  stdout: '{result.stdout}'")
-    logging.debug(f"    stderr: '{result.stderr}'")
+    logging.debug(f"  stderr: '{result.stderr}'")
     return result.returncode, result.stdout, result.stderr
 
 
@@ -856,9 +902,6 @@ def main(args: argparse.Namespace):
         # for updates, need configured Transmission URL
         if transmission_url is None:
             logging.error(f"Transmission URL not configured, exiting")
-            return
-        if transmission_url is None:
-            logging.error(f"Transmission URL {transmission_url} is not valid, exiting")
             return
         logging.info(f"Running update, URL is {transmission_url}.")
 
