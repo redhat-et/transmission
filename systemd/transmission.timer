@@ -4,7 +4,13 @@ Description=Trigger Transmission
 
 [Timer]
 OnActiveSec=10sec
+
+#5 minute loop for environments that require a high resolution
 OnUnitActiveSec=5min
+
+#12 hour loop for larger environments where a higher resolution is undesireable and randomization helps to spreads out peak loads.
+#OnUnitActiveSec=12h
+#RandomizedDelaySec=39600
 
 [Install]
 WantedBy=timers.target
