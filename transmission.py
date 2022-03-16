@@ -110,7 +110,10 @@ def get_interface_mac(interface: Optional[str]) -> str:
 
 
 def get_mac():
-    return get_interface_mac(get_primary_interface())
+    mac = get_interface_mac(get_primary_interface())
+    if mac is not None:
+        mac = mac.replace(':', '-')
+    return mac
 
 
 def get_uuid():
