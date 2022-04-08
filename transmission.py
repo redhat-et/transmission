@@ -860,6 +860,101 @@ def update_systemd_units(current_configset_dir, changed_files):
             run_command(["systemctl", "start", unit])
 
 
+# -------------------- updating Podman workloads --------------------
+
+def list_pods():
+    rc, stdout, stderr = run_command(['podman', 'pod', 'list', '-q'])
+    if rc != 0:
+        logging.error(f"Failed to list pods: {stderr}")
+        return None
+    return [pod_id for pod_id in stdout.split('\n') if len(pod_id)>0]
+
+def inspect_pod(pod_id):
+    rc, stdout, stderr = run_command(['podman', 'pod', 'inspect', pod_id])
+    if rc != 0:
+        logging.error(f"Failed to inspect pod {pod_id}: {stderr}")
+        return None
+
+    return json.loads(stdout)
+
+def run_pod(filepath):
+    rc, stdout, stderr = run_command(['podman', 'play', 'kube', filepath])
+    if rc != 0:
+        logging.error(f"Failed to start {filepath}: {stderr}")
+        return None
+    result = str.splitlines(stdout)
+    if result[0] != "Pod:":
+        logging.error(f"Unexpected result running podman play kube: {result}")
+        return None
+    pod_id = result[1]
+    logging.info(f"Started pod {pod_id} from {filepath}")
+    return pod_id
+
+def remove_pod(pod_id):
+    rc, stdout, stderr = run_command(['podman', 'pod', 'rm', '-f', pod_id])
+    if rc != 0:
+        logging.warning(f"Failed to remove pod {pod_id}: {stderr}")
+        return None
+    logging.info(f"Removed pod {pod_id}")
+
+def update_podman():
+    manifest_dir = DEFAULT_TRANSMISSION_CONFIG_DIR + "/pod-manifests"
+    if not os.path.exists(manifest_dir):
+        return
+
+    logging.info("Updating Podman workloads")
+
+    # load pod states (dict of Id --> {"file": , "created": })
+    pod_states = {}
+    if os.path.exists(manifest_dir + "/.transmission.pod_states.yaml"):
+        with open(os.path.join(manifest_dir, ".transmission.pod_states.yaml"), "r") as f:
+            try:
+                pod_states = yaml.safe_load(f)
+                pod_states = pod_states if pod_states is not None else {}
+            except yaml.YAMLError as e:
+                logging.error(f"Error parsing pod state file: {e}.")
+                return
+
+    for pod_id in list(pod_states.keys()):
+        state = pod_states.get(pod_id)
+        filepath = os.path.join(manifest_dir, state.get("file"))
+
+        # if YAML has been deleted, delete the pod and its volumes
+        if not os.path.exists(filepath):
+            logging.info(f"Manifests {filepath} no longer exists, removing pod {pod_id}.")
+            remove_pod(pod_id)
+            # TODO: remove volumes
+            del pod_states[pod_id]
+        else:
+            # if YAML has been updated, delete the pod but keep its volumes
+            update = os.stat(filepath).st_mtime
+            last_update = state.get("last_update")
+            if last_update is not None and update > last_update:
+                logging.info(f"Manifests {filepath} was updated, removing pod {pod_id}.")
+                remove_pod(pod_id)
+                del pod_states[pod_id]
+
+    # for all YAMLs not yet / no longer in state file, create pods, update state file
+    existing_manifests = [s.get("file") for p, s in pod_states.items()]
+    manifests = [f for f in os.listdir(manifest_dir) if os.path.isfile(os.path.join(manifest_dir, f))]
+    manifests = [m for m in manifests if m.endswith(".yaml") and m != ".transmission.pod_states.yaml"]
+
+    for m in manifests:
+        if m in existing_manifests:
+            continue
+
+        pod_id = run_pod(os.path.join(manifest_dir, m))
+        if pod_id != None:
+            pod_states[pod_id] = {
+                "file": m,
+                "last_update": os.stat(os.path.join(manifest_dir, m)).st_mtime
+            }
+
+    # write updated pod states
+    with open(os.path.join(manifest_dir, ".transmission.pod_states.yaml"), 'w') as f:
+        yaml.dump(pod_states, f)
+
+
 # -------------------- banner updates --------------------
 
 def update_banner(url):
@@ -947,6 +1042,7 @@ def main(args: argparse.Namespace):
             return
         # if staging completed without changes, stop here and retry later
         if not has_changes:
+            update_podman()
             logging.info("No updates, exiting")
             return
 
@@ -974,6 +1070,8 @@ def main(args: argparse.Namespace):
             update_systemd_units(args.configset_dir + "/current", updated_files)
             if "update-systemd-units" == args.stop_after_step:
                 return
+
+    update_podman()
 
 
 def get_args(argv: List[str]) -> argparse.Namespace:
