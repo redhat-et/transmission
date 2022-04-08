@@ -103,3 +103,6 @@ demo.service:
   - /var/opt/demo/*
   - /etc/demo/*.conf
 ```
+
+### Managing Containers on Podman
+To declaratively manage containers on the device, users can place Kubernetes pod spec manifests into `/etc/transmission.d/pod-manifests` that Transmission will then automatically run on Podman using `podman play kube`. Refer to the [Podman documentation](https://docs.podman.io/en/latest/markdown/podman-play-kube.1.html) for the pod spec constructs that Podman supports. When a manifest is updated or removed, the corresponding pod is replaced or deleted, respectively.
