@@ -2,7 +2,11 @@
 ## About
 Transmission is an experimental device management agent for `ostree`-based Linux operating systems.
 
-It manages device configuration similar to `ostree` managing the device OS, i.e. it allows pulling updates to sets of configuration and appling / reverting them transactionally, reloading `systemd` units as necessary. This includes configuration of the target OS version to run, and Transmission will delegate OS updates/rollbacks to `rpm-ostree` or other agents accordingly.
+It manages device configuration similar to `ostree` managing a device OS: It periodically queries a configuration service for updates to a device's target configuration. If updates exists, it stages these updates as a new configuration set, including downloading assets and verifying their integrity, and then transactionally rolls that updated configuration set into the device's live file system, reloading 'systemd' units that depend on changed configuration as necessary. Transmission also supports rolling back configuration, for example triggered by [greenboot](https://github.com/fedora-iot/greenboot) health checking scripts.
+
+As configuration servivce, Transmission supports a GitHub provider that makes it very easy to manage devices in a GitOps methodology as well as an Ignition provider that would allow configuration to be served in a manner similar to OpenShift’s MachineConfigServer.
+
+Transmission now also supports managing container workloads on Podman, but adding/updating/removing pod manifests in `/etc/transmission.d/pod-manifests`.
 
 ## Usage
 ### Installation
