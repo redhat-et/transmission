@@ -1,5 +1,5 @@
 Name:          transmission-agent
-Version:       0.1.6
+Version:       0.1.7
 Release:       1%{?dist}
 Summary:       An experimental device management agent for ostree-based Linux operating systems
 License:       Apache License, Version 2.0
@@ -34,6 +34,8 @@ ln -s /run/transmission-banner %{buildroot}%{_sysconfdir}/issue.d/transmission.i
 %{_unitdir}/*
 
 %changelog
+* Fri Apr 8 2022 Frank Zdarsky <fzdarsky@redhat.com> 0.1.7-1
+- Added support for managing containers via podman play kube
 * Tue Aug 17 2021 Frank Zdarsky <fzdarsky@redhat.com> 0.1.6-1
 - Added subscription id and insights id
 * Mon Aug 2 2021 Frank Zdarsky <fzdarsky@redhat.com> 0.1.5-1
