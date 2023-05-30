@@ -39,7 +39,7 @@ You can increase the log-level using the `--log-level` argument.
 ## Implementation Details
 ### Device Management Endpoint
 Transmission will periodically query (via HTTP GET) the provided URL, making the following variable substitutions:
-* `${arch}`: the device's platform (output of `uname -i`)
+* `${arch}`: the device's platform (output of `uname -m`)
 * `${mac}`: the MAC address of the device's primary interface
 * `${uuid}`: a UUID generated based on `/etc/machine-id`
 * `${subscriptionid}`: the Red Hat Subscription Manager ID (from `subscription-manager identity`)
