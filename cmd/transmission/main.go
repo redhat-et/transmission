@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -74,7 +73,13 @@ func updateBanner(url string) error {
 	return ioutil.WriteFile("/run/transmission-banner", []byte(action), 0644)
 }
 
+func usage() {
+	fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [--root=/path/to/fakeroot]\n", os.Args[0])
+}
+
 func main() {
+	flag.Usage = usage
+	rootDir := flag.String("rootDir", "/", "directory used as file system root by "+os.Args[0])
 	flag.Parse()
 	flag.Lookup("logtostderr").Value.Set("true")
 	defer glog.Flush()
@@ -99,7 +104,7 @@ func main() {
 	if err != nil {
 		glog.Fatalln(err)
 	}
-	dn.SetRootDir(filepath.Join(util.DefaultIfError(os.Getwd, "./"), "fakeroot"))
+	dn.SetRootDir(*rootDir)
 	dn.InitDirs()
 
 	glog.Infof("Running update, URL is %s", url)

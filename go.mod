@@ -1,11 +1,11 @@
 module github.com/redhat-et/transmission
 
-go 1.18
+go 1.19
 
 require (
 	github.com/coreos/ignition/v2 v2.15.0
 	github.com/ghodss/yaml v1.0.0
-	github.com/golang/glog v1.1.0
+	github.com/golang/glog v1.1.2
 	github.com/google/renameio v1.0.1
 	github.com/openshift/machine-config-operator v0.0.1-0.20230518012459-230bb7e5f562
 	github.com/vincent-petithory/dataurl v1.0.0
