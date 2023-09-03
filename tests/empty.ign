@@ -1,0 +1,19 @@
+{
+  "ignition": {
+    "config": {
+      "replace": {
+        "verification": {}
+      }
+    },
+    "proxy": {},
+    "security": {
+      "tls": {}
+    },
+    "timeouts": {},
+    "version": "3.4.0"
+  },
+  "kernelArguments": {},
+  "passwd": {},
+  "storage": {},
+  "systemd": {}
+}

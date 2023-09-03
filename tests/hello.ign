@@ -1,0 +1,32 @@
+{
+  "ignition": {
+    "config": {
+      "replace": {
+        "verification": {}
+      }
+    },
+    "proxy": {},
+    "security": {
+      "tls": {}
+    },
+    "timeouts": {},
+    "version": "3.4.0"
+  },
+  "kernelArguments": {},
+  "passwd": {},
+  "storage": {
+    "files": [
+      {
+        "group": {},
+        "overwrite": true,
+        "path": "/etc/transmission/hello.txt",
+        "user": {},
+        "contents": {
+          "source": "data:;base64,SGVsbG8sIHRyYW5zbWlzc2lvbiE=",
+          "verification": {}
+        }
+      }
+    ]
+  },
+  "systemd": {}
+}
