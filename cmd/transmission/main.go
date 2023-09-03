@@ -73,12 +73,7 @@ func updateBanner(url string) error {
 	return ioutil.WriteFile("/run/transmission-banner", []byte(action), 0644)
 }
 
-func usage() {
-	fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [--root=/path/to/fakeroot]\n", os.Args[0])
-}
-
 func main() {
-	flag.Usage = usage
 	rootDir := flag.String("rootDir", "/", "directory used as file system root by "+os.Args[0])
 	flag.Parse()
 	flag.Lookup("logtostderr").Value.Set("true")
@@ -98,6 +93,11 @@ func main() {
 	if len(url) == 0 {
 		glog.Infoln("Transmission URL not configured, exiting")
 		os.Exit(0)
+	}
+
+	if *rootDir == "/" && os.Geteuid() != 0 {
+		glog.Errorln("Need root privileges to write to '/' (use '--rootDir=' flag to specify a fakeroot), exiting.")
+		os.Exit(1)
 	}
 
 	dn, err := daemon.New(nil)
