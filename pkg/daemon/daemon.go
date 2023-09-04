@@ -99,6 +99,7 @@ func New(
 
 func (dn *Daemon) SetRootDir(path string) {
 	rootDirPath = path
+	glog.Infof("Using %q as root directory", rootDirPath)
 }
 
 func (dn *Daemon) InitDirs() {

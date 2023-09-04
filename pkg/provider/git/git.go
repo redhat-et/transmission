@@ -100,7 +100,6 @@ func (g *GitConfigProvider) FetchConfig(ctx context.Context, dest string) (bool,
 
 			// continue processing as normal
 			ignRaw := "{\"ignition\":{\"version\":\"3.4.0\"},\"storage\":{\"files\":[" + string(jsonData) + "]}}"
-			fmt.Printf("json: %v\n", ignRaw)
 			ignTemp, _, err := ign3config.Parse([]byte(ignRaw))
 			if err != nil {
 				return false, fmt.Errorf("failed to parse .meta file into an ignition file: %w", err)
