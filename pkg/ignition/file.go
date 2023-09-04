@@ -3,7 +3,6 @@ package ignition
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 
 	ign3types "github.com/coreos/ignition/v2/config/v3_4/types"
@@ -24,7 +23,7 @@ func Save(fpath string, ign *ign3types.Config) error {
 		return fmt.Errorf("failed to marshal config set: %w", err)
 	}
 
-	return ioutil.WriteFile(fpath, rawIgn, 0644)
+	return os.WriteFile(fpath, rawIgn, 0644)
 }
 
 func EnsureExists(fpath string) error {

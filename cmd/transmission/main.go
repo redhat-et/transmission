@@ -5,7 +5,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strings"
 	"time"
@@ -18,7 +17,7 @@ import (
 )
 
 func getTransmissionUrlFromKernelCmdline() (string, error) {
-	cmdline, err := ioutil.ReadFile("/proc/cmdline")
+	cmdline, err := os.ReadFile("/proc/cmdline")
 	if err != nil {
 		return "", fmt.Errorf("reading /proc/cmdline failed: %w", err)
 	}
@@ -70,7 +69,7 @@ func updateBanner(url string) error {
 	if len(url) > 0 {
 		action = fmt.Sprintf("Using %s to configure this device\n\n", url)
 	}
-	return ioutil.WriteFile("/run/transmission-banner", []byte(action), 0644)
+	return os.WriteFile("/run/transmission-banner", []byte(action), 0644)
 }
 
 func main() {

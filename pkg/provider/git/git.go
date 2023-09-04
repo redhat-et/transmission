@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -73,7 +72,7 @@ func (g *GitConfigProvider) FetchConfig(ctx context.Context, dest string) (bool,
 		}
 
 		if strings.HasSuffix(fpath, ".meta") {
-			yamlData, err := ioutil.ReadFile(filepath.Join(g.StagingDir, fpath))
+			yamlData, err := os.ReadFile(filepath.Join(g.StagingDir, fpath))
 			if err != nil {
 				return false, fmt.Errorf("failed to read %s: %w", fpath, err)
 			}
@@ -109,7 +108,7 @@ func (g *GitConfigProvider) FetchConfig(ctx context.Context, dest string) (bool,
 
 			// If the original compression was tar+gzip, download and untar the file here and add it as dataUrl
 			if origCompression == "tar+gzip" {
-				tempDir, err := ioutil.TempDir("", "transmission")
+				tempDir, err := os.MkdirTemp("", "transmission")
 				if err != nil {
 					return false, fmt.Errorf("failed to create temp dir: %w", err)
 				}
@@ -130,7 +129,7 @@ func (g *GitConfigProvider) FetchConfig(ctx context.Context, dest string) (bool,
 				if err != nil {
 					return false, fmt.Errorf("failed to fetch remote resource %s: %w", *tarFile.Contents.Source, err)
 				}
-				err = ioutil.WriteFile(tarFilePath, buf, 0644)
+				err = os.WriteFile(tarFilePath, buf, 0644)
 				if err != nil {
 					return false, fmt.Errorf("failed to write remote resource %s to %s: %w", *tarFile.Contents.Source, tarFilePath, err)
 				}
@@ -141,7 +140,7 @@ func (g *GitConfigProvider) FetchConfig(ctx context.Context, dest string) (bool,
 					return false, fmt.Errorf("failed to untar %s: %w", tarFilePath, err)
 				}
 
-				buf, err = ioutil.ReadFile(filepath.Join(tempDir, destFile))
+				buf, err = os.ReadFile(filepath.Join(tempDir, destFile))
 				if err != nil {
 					return false, fmt.Errorf("faild to read '%s' from archive: %w", destFile, err)
 				}

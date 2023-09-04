@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
@@ -40,7 +39,7 @@ func parseHexIP(hexIP string) (net.IP, error) {
 }
 
 func GetDefaultInterfaceName() (string, error) {
-	routes, err := ioutil.ReadFile(ipv4RouteFile)
+	routes, err := os.ReadFile(ipv4RouteFile)
 	if err != nil {
 		return "", err
 	}
@@ -82,7 +81,7 @@ func GetDefaultMACAddress() (string, error) {
 }
 
 func GetMachineID() (string, error) {
-	machineID, err := ioutil.ReadFile("/etc/machine-id")
+	machineID, err := os.ReadFile("/etc/machine-id")
 	if err != nil {
 		return "", fmt.Errorf("reading machine ID failed: %w", err)
 	}
@@ -111,7 +110,7 @@ func GetSubscriptionID() (string, error) {
 }
 
 func GetInsightsID() (string, error) {
-	insightsID, err := ioutil.ReadFile("/etc/insights-client/machine-id")
+	insightsID, err := os.ReadFile("/etc/insights-client/machine-id")
 	if err != nil {
 		return "", fmt.Errorf("reading Insights ID failed: %w", err)
 	}
