@@ -1,10 +1,13 @@
 package daemon
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 
+	ign3types "github.com/coreos/ignition/v2/config/v3_4/types"
+	"github.com/golang/glog"
 	"github.com/openshift/machine-config-operator/pkg/daemon/osrelease"
 	"github.com/redhat-et/transmission/pkg/ignition"
 	"github.com/redhat-et/transmission/pkg/util"
@@ -42,6 +45,9 @@ var (
 
 	// currentConfigSetPath is the path to the current configset
 	currentConfigSetPath = filepath.Join(configSetDirPath, "current.ign")
+
+	// previousConfigSetPath is the path to the backup of current configset when it gets updated
+	previousConfigSetPath = filepath.Join(configSetDirPath, "previous.ign")
 
 	// stagingDirPath is where Transmission stages its configsets
 	stagingDirPath = filepath.Join(transmissionDirPath, "staging")
@@ -113,6 +119,10 @@ func (dn *Daemon) GetCurrentConfigSetPath() string {
 	return filepath.Join(rootDirPath, currentConfigSetPath)
 }
 
+func (dn *Daemon) GetPreviousConfigSetPath() string {
+	return filepath.Join(rootDirPath, previousConfigSetPath)
+}
+
 func (dn *Daemon) GetStagingDirPath() string {
 	return filepath.Join(rootDirPath, stagingDirPath)
 }
@@ -120,3 +130,17 @@ func (dn *Daemon) GetStagingDirPath() string {
 // type unreconcilableErr struct {
 // 	error
 // }
+
+// storeCurrentConfigOnDisk serializes a machine config into a file in /etc,
+// which we use to denote that we are expecting the system has transitioned
+// into this state.
+func (dn *Daemon) storeCurrentConfigOnDisk(current *ign3types.Config) error {
+	ign, err := json.Marshal(current)
+	if err != nil {
+		return err
+	}
+	if os.Rename(dn.GetCurrentConfigSetPath(), dn.GetPreviousConfigSetPath()) != nil {
+		glog.Warningf("Failed to rename %s to %s: %w", dn.GetCurrentConfigSetPath(), dn.GetPreviousConfigSetPath(), err)
+	}
+	return writeFileAtomicallyWithDefaults(dn.GetCurrentConfigSetPath(), ign)
+}

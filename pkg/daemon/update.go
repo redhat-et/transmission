@@ -56,35 +56,38 @@ func (dn *Daemon) UpdateConfig(oldConfigName string, newConfigName string, skipC
 		}
 	}()
 
-	// // update SSH keys
-	// if err := dn.updateSSHKeys(newIgnConfig.Passwd.Users); err != nil {
-	// 	return err
-	// }
+	if err := dn.createUsers(newIgnConfig.Passwd.Users); err != nil {
+		return err
+	}
 
-	// defer func() {
-	// 	if retErr != nil {
-	// 		if err := dn.updateSSHKeys(oldIgnConfig.Passwd.Users); err != nil {
-	// 			errs := kubeErrs.NewAggregate([]error{err, retErr})
-	// 			retErr = fmt.Errorf("error rolling back SSH keys updates: %w", errs)
-	// 			return
-	// 		}
-	// 	}
-	// }()
+	if err := dn.updateSSHKeys(newIgnConfig.Passwd.Users); err != nil {
+		return err
+	}
 
-	// // Set password hash
-	// if err := dn.SetPasswordHash(newIgnConfig.Passwd.Users); err != nil {
-	// 	return err
-	// }
+	defer func() {
+		if retErr != nil {
+			if err := dn.updateSSHKeys(oldIgnConfig.Passwd.Users); err != nil {
+				errs := kubeErrs.NewAggregate([]error{err, retErr})
+				retErr = fmt.Errorf("error rolling back SSH keys updates: %w", errs)
+				return
+			}
+		}
+	}()
 
-	// defer func() {
-	// 	if retErr != nil {
-	// 		if err := dn.SetPasswordHash(oldIgnConfig.Passwd.Users); err != nil {
-	// 			errs := kubeErrs.NewAggregate([]error{err, retErr})
-	// 			retErr = fmt.Errorf("error rolling back password hash updates: %w", errs)
-	// 			return
-	// 		}
-	// 	}
-	// }()
+	// Set password hash
+	if err := dn.SetPasswordHash(newIgnConfig.Passwd.Users); err != nil {
+		return err
+	}
+
+	defer func() {
+		if retErr != nil {
+			if err := dn.SetPasswordHash(oldIgnConfig.Passwd.Users); err != nil {
+				errs := kubeErrs.NewAggregate([]error{err, retErr})
+				retErr = fmt.Errorf("error rolling back password hash updates: %w", errs)
+				return
+			}
+		}
+	}()
 
 	// if dn.os.IsCoreOSVariant() {
 	// 	coreOSDaemon := CoreOSDaemon{dn}
@@ -105,22 +108,33 @@ func (dn *Daemon) UpdateConfig(oldConfigName string, newConfigName string, skipC
 	// 	glog.Info("updating the OS on non-CoreOS nodes is not supported")
 	// }
 
-	// // At this point, we write the now expected to be "current" config to /etc.
-	// // When we reboot, we'll find this file and validate that we're in this state,
-	// // and that completes an update.
-	// if err := dn.storeCurrentConfigOnDisk(newConfig); err != nil {
+	// // Ideally we would want to update kernelArguments only via MachineConfigs.
+	// // We are keeping this to maintain compatibility and OKD requirement.
+	// if err := UpdateTuningArgs(KernelTuningFile, CmdLineFile); err != nil {
 	// 	return err
 	// }
-	// defer func() {
-	// 	if retErr != nil {
-	// 		if err := dn.storeCurrentConfigOnDisk(oldConfig); err != nil {
-	// 			errs := kubeErrs.NewAggregate([]error{err, retErr})
-	// 			retErr = fmt.Errorf("error rolling back current config on disk: %w", errs)
-	// 			return
-	// 		}
-	// 	}
-	// }()
 
+	// At this point, we write the now expected to be "current" config to /etc.
+	// When we reboot, we'll find this file and validate that we're in this state,
+	// and that completes an update.
+	if err := dn.storeCurrentConfigOnDisk(&newIgnConfig); err != nil {
+		return err
+	}
+	defer func() {
+		if retErr != nil {
+			if err := dn.storeCurrentConfigOnDisk(&oldIgnConfig); err != nil {
+				errs := kubeErrs.NewAggregate([]error{err, retErr})
+				retErr = fmt.Errorf("error rolling back current config on disk: %w", errs)
+				return
+			}
+		}
+	}()
+
+	// if err := dn.finalizeBeforeReboot(newConfig); err != nil {
+	// 	return err
+	// }
+
+	// return dn.performPostConfigChangeAction(actions, newConfig.GetName())
 	return nil
 }
 
@@ -263,7 +277,6 @@ func (dn *Daemon) deleteStaleData(oldIgnConfig, newIgnConfig ign3types.Config) e
 		}
 
 		glog.V(2).Infof("Deleting stale config file: %s", f.Path)
-		// if err := os.Remove(f.Path); err != nil {
 		if err := os.Remove(filepath.Join(rootDirPath, f.Path)); err != nil {
 			newErr := fmt.Errorf("unable to delete %s: %w", f.Path, err)
 			if !os.IsNotExist(err) {
@@ -472,4 +485,37 @@ func (dn *Daemon) writeUnits(units []ign3types.Unit) error {
 // it doesn't fetch remote files and expects a flattened config file.
 func (dn *Daemon) writeFiles(files []ign3types.File, skipCertificateWrite bool) error {
 	return writeFiles(files, skipCertificateWrite)
+}
+
+// Set a given PasswdUser's Password Hash
+func (dn *Daemon) SetPasswordHash(newUsers []ign3types.PasswdUser) error {
+	// confirm that user exits
+	if len(newUsers) == 0 {
+		return nil
+	}
+
+	// var uErr user.UnknownUserError
+	// switch _, err := user.Lookup(constants.CoreUserName); {
+	// case err == nil:
+	// case errors.As(err, &uErr):
+	// 	glog.Info("core user does not exist, and creating users is not supported, so ignoring configuration specified for core user")
+	// 	return nil
+	// default:
+	// 	return fmt.Errorf("failed to check if user core exists: %w", err)
+	// }
+
+	// SetPasswordHash sets the password hash of the specified user.
+	for _, u := range newUsers {
+		pwhash := "*"
+		if u.PasswordHash != nil && *u.PasswordHash != "" {
+			pwhash = *u.PasswordHash
+		}
+
+		if out, err := exec.Command("usermod", "-p", pwhash, u.Name).CombinedOutput(); err != nil {
+			return fmt.Errorf("Failed to change password for %s: %s:%w", u.Name, out, err)
+		}
+		glog.Info("Password has been configured")
+	}
+
+	return nil
 }
