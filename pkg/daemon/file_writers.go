@@ -282,9 +282,8 @@ func lookupGID(group string) (int, error) {
 
 // This is essentially ResolveNodeUidAndGid() from Ignition; XXX should dedupe
 func getFileOwnership(file ign3types.File) (int, int, error) {
-	// uid, gid := 0, 0 // default to root
-	uid, gid := 1000, 1000 // TODO: temporarily set to standard user/group
-	var err error          // create default error var
+	uid, gid := 0, 0 // default to root
+	var err error    // create default error var
 	if file.User.ID != nil {
 		uid = *file.User.ID
 	} else if file.User.Name != nil && *file.User.Name != "" {
