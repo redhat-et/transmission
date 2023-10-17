@@ -7,10 +7,9 @@ import (
 	"path/filepath"
 
 	ign3types "github.com/coreos/ignition/v2/config/v3_4/types"
-	"github.com/golang/glog"
 	"github.com/openshift/machine-config-operator/pkg/daemon/osrelease"
 	"github.com/redhat-et/transmission/pkg/ignition"
-	"github.com/redhat-et/transmission/pkg/util"
+	"k8s.io/klog/v2"
 )
 
 type Daemon struct {
@@ -28,29 +27,26 @@ type Daemon struct {
 
 	// channel used to ensure all spawned goroutines exit when we exit.
 	stopCh <-chan struct{}
+
+	// directory to use for storing application configuration (e.g. configsets, backup files, etc.)
+	configDir string
+
+	// directory to use as file system root
+	rootDir string
 }
 
 var (
-	// rootPath is the path to the file system root
-	rootDirPath = filepath.Join("/")
-
-	// transmissionDirPath is where Transmission stores its config and state
-	transmissionDirPath = filepath.Join("etc", "transmission")
-
 	// configSetDirPath is where Transmission stores its configsets
-	configSetDirPath = filepath.Join(transmissionDirPath, "configsets")
+	configSetDirName = "configsets"
 
-	// desiredConfigSetPath is the path to the desired configset
-	desiredConfigSetPath = filepath.Join(configSetDirPath, "desired.ign")
+	// desiredConfigSetFilename is the file name of the desired configset
+	desiredConfigSetFilename = "desired.ign"
 
-	// currentConfigSetPath is the path to the current configset
-	currentConfigSetPath = filepath.Join(configSetDirPath, "current.ign")
+	// currentConfigSetFilename is the file name of the current configset
+	currentConfigSetFilename = "current.ign"
 
-	// previousConfigSetPath is the path to the backup of current configset when it gets updated
-	previousConfigSetPath = filepath.Join(configSetDirPath, "previous.ign")
-
-	// stagingDirPath is where Transmission stages its configsets
-	stagingDirPath = filepath.Join(transmissionDirPath, "staging")
+	// previousConfigSetFilename is the file name of the previous configset
+	previousConfigSetFilename = "previous.ign"
 
 	// pathSystemd is the path systemd modifiable units, services, etc.. reside
 	pathSystemd = "/etc/systemd/system"
@@ -63,69 +59,50 @@ var (
 
 func New(
 	exitCh chan<- error,
+	configDir string,
+	rootDir string,
+	mock bool,
 ) (*Daemon, error) {
-	mock := false
-	if os.Getuid() != 0 {
-		mock = true
+	dn := &Daemon{
+		mock:      mock,
+		os:        osrelease.OperatingSystem{},
+		bootID:    "",
+		exitCh:    exitCh,
+		configDir: configDir,
+		rootDir:   rootDir,
 	}
 
-	var (
-		err error
-	)
+	if err := os.MkdirAll(filepath.Dir(dn.CurrentConfigSet()), 0755); err != nil {
+		return nil, err
+	}
+	if err := ignition.EnsureExists(dn.CurrentConfigSet()); err != nil {
+		return nil, err
+	}
 
-	hostos := osrelease.OperatingSystem{}
 	if !mock {
-		hostos, err = osrelease.GetHostRunningOS()
+		var err error
+		dn.os, err = osrelease.GetHostRunningOS()
 		if err != nil {
 			return nil, fmt.Errorf("checking operating system: %w", err)
 		}
+		// 	dn.bootID, err = getBootID()
+		// 	if err != nil {
+		// 		return nil, fmt.Errorf("failed to read boot ID: %w", err)
+		// 	}
 	}
-
-	// bootID := ""
-	// if !mock {
-	// 	bootID, err = getBootID()
-	// 	if err != nil {
-	// 		return nil, fmt.Errorf("failed to read boot ID: %w", err)
-	// 	}
-	// }
-
-	return &Daemon{
-		mock: mock,
-		os:   hostos,
-		// bootID: bootID,
-		exitCh: exitCh,
-	}, nil
+	return dn, nil
 }
 
-func (dn *Daemon) SetRootDir(path string) {
-	rootDirPath = path
-	glog.Infof("Using %q as root directory", rootDirPath)
+func (dn *Daemon) DesiredConfigSet() string {
+	return filepath.Join(dn.configDir, configSetDirName, desiredConfigSetFilename)
 }
 
-func (dn *Daemon) InitDirs() {
-	util.Must(os.MkdirAll(dn.GetStagingDirPath(), 0755))
-	util.Must(os.MkdirAll(dn.GetConfigSetDirPath(), 0755))
-	util.Must(ignition.EnsureExists(dn.GetCurrentConfigSetPath()))
+func (dn *Daemon) CurrentConfigSet() string {
+	return filepath.Join(dn.configDir, configSetDirName, currentConfigSetFilename)
 }
 
-func (dn *Daemon) GetConfigSetDirPath() string {
-	return filepath.Join(rootDirPath, configSetDirPath)
-}
-
-func (dn *Daemon) GetDesiredConfigSetPath() string {
-	return filepath.Join(rootDirPath, desiredConfigSetPath)
-}
-
-func (dn *Daemon) GetCurrentConfigSetPath() string {
-	return filepath.Join(rootDirPath, currentConfigSetPath)
-}
-
-func (dn *Daemon) GetPreviousConfigSetPath() string {
-	return filepath.Join(rootDirPath, previousConfigSetPath)
-}
-
-func (dn *Daemon) GetStagingDirPath() string {
-	return filepath.Join(rootDirPath, stagingDirPath)
+func (dn *Daemon) PreviousConfigSetPath() string {
+	return filepath.Join(dn.configDir, configSetDirName, previousConfigSetFilename)
 }
 
 // type unreconcilableErr struct {
@@ -140,8 +117,8 @@ func (dn *Daemon) storeCurrentConfigOnDisk(current *ign3types.Config) error {
 	if err != nil {
 		return err
 	}
-	if os.Rename(dn.GetCurrentConfigSetPath(), dn.GetPreviousConfigSetPath()) != nil {
-		glog.Warningf("Failed to rename %s to %s: %w", dn.GetCurrentConfigSetPath(), dn.GetPreviousConfigSetPath(), err)
+	if os.Rename(dn.CurrentConfigSet(), dn.PreviousConfigSetPath()) != nil {
+		klog.Warningf("failed to rename %s to %s: %w", dn.CurrentConfigSet(), dn.PreviousConfigSetPath(), err)
 	}
-	return writeFileAtomicallyWithDefaults(dn.GetCurrentConfigSetPath(), ign)
+	return writeFileAtomicallyWithDefaults(dn.CurrentConfigSet(), ign)
 }

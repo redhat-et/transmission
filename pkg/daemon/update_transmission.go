@@ -9,18 +9,18 @@ import (
 	"strconv"
 
 	ign3types "github.com/coreos/ignition/v2/config/v3_4/types"
-	"github.com/golang/glog"
+	"k8s.io/klog/v2"
 )
 
 // Unlike MCD, Transmission allows for multiple, arbitrarily users to be created
 // and have SSH keys added, so we modify MCD's methods accordingly.
 
-func userSSHDirPath(username string) string {
-	return filepath.Join(rootDirPath, "home", username, ".ssh")
+func (dn *Daemon) userSSHDirPath(username string) string {
+	return filepath.Join(dn.rootDir, "home", username, ".ssh")
 }
 
-func userSSHKeyDirPath(username string) string {
-	return filepath.Join(rootDirPath, "home", username, ".ssh", "authorized_keys.d")
+func (dn *Daemon) userSSHKeyDirPath(username string) string {
+	return filepath.Join(dn.rootDir, "home", username, ".ssh", "authorized_keys.d")
 }
 
 func userExists(username string) bool {
@@ -29,7 +29,7 @@ func userExists(username string) bool {
 }
 
 func createUser(username string) error {
-	glog.Infof("Creating user %q", username)
+	klog.Infof("Creating user %q", username)
 	if out, err := exec.Command("useradd", "--create-home", username).CombinedOutput(); err != nil {
 		return fmt.Errorf("Failed to create user %s: %s:%w", username, out, err)
 	}
@@ -54,14 +54,14 @@ func (dn *Daemon) createUsers(newUsers []ign3types.PasswdUser) error {
 
 // Ensures that both the SSH root directory (/home/$username/.ssh) as well as any
 // subdirectories are created with the correct (0700) permissions.
-func createSSHKeyDir(username, authKeyDir string) error {
-	glog.Infof("Creating missing SSH key dir at %s", authKeyDir)
+func (dn *Daemon) createSSHKeyDir(username, authKeyDir string) error {
+	klog.Infof("Creating missing SSH key dir at %s", authKeyDir)
 
 	mkdir := func(dir string) error {
 		return exec.Command("runuser", "-u", username, "--", "mkdir", "-m", "0700", "-p", dir).Run()
 	}
 
-	if err := mkdir(userSSHDirPath(username)); err != nil {
+	if err := mkdir(dn.userSSHDirPath(username)); err != nil {
 		return err
 	}
 	return mkdir(authKeyDir)
@@ -80,13 +80,13 @@ func (dn *Daemon) atomicallyWriteSSHKey(username, keys string) error {
 	if gid, err = strconv.Atoi(u.Gid); err != nil {
 		return err
 	}
-	authKeyPath := filepath.Join(rootDirPath, u.HomeDir, ".ssh", "authorized_keys")
+	authKeyPath := filepath.Join(dn.rootDir, u.HomeDir, ".ssh", "authorized_keys")
 
-	glog.Infof("Writing SSH keys to %q", authKeyPath)
+	klog.Infof("Writing SSH keys to %q", authKeyPath)
 
 	authKeyDir := filepath.Dir(authKeyPath)
 	if _, err := os.Stat(authKeyDir); os.IsNotExist(err) {
-		if err := createSSHKeyDir(u.Name, authKeyDir); err != nil {
+		if err := dn.createSSHKeyDir(u.Name, authKeyDir); err != nil {
 			return err
 		}
 	}
@@ -95,7 +95,7 @@ func (dn *Daemon) atomicallyWriteSSHKey(username, keys string) error {
 		return err
 	}
 
-	glog.V(2).Infof("Wrote SSH keys to %q", authKeyPath)
+	klog.V(2).Infof("Wrote SSH keys to %q", authKeyPath)
 
 	return nil
 }

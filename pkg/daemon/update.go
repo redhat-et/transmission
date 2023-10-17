@@ -9,9 +9,9 @@ import (
 	"strings"
 
 	ign3types "github.com/coreos/ignition/v2/config/v3_4/types"
-	"github.com/golang/glog"
 	"github.com/redhat-et/transmission/pkg/ignition"
 	kubeErrs "k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -31,7 +31,7 @@ func (dn *Daemon) UpdateConfig(oldConfigName string, newConfigName string, skipC
 		return fmt.Errorf("loading new Ignition config failed: %w", err)
 	}
 
-	// glog.Infof("Checking Reconcilable for config %v to %v", oldConfigName, newConfigName)
+	// klog.Infof("Checking Reconcilable for config %v to %v", oldConfigName, newConfigName)
 
 	// // make sure we can actually reconcile this state
 	// diff, reconcilableError := reconcilable(oldConfig, newConfig)
@@ -40,7 +40,7 @@ func (dn *Daemon) UpdateConfig(oldConfigName string, newConfigName string, skipC
 	// 	return &unreconcilableErr{wrappedErr}
 	// }
 
-	// glog.Infof("Starting update from %s to %s: %+v", oldConfigName, newConfigName, diff)
+	// klog.Infof("Starting update from %s to %s: %+v", oldConfigName, newConfigName, diff)
 
 	// update files on disk that need updating
 	if err := dn.updateFiles(oldIgnConfig, newIgnConfig, skipCertificateWrite); err != nil {
@@ -105,7 +105,7 @@ func (dn *Daemon) UpdateConfig(oldConfigName string, newConfigName string, skipC
 	// 		}
 	// 	}()
 	// } else {
-	// 	glog.Info("updating the OS on non-CoreOS nodes is not supported")
+	// 	klog.Info("updating the OS on non-CoreOS nodes is not supported")
 	// }
 
 	// // Ideally we would want to update kernelArguments only via MachineConfigs.
@@ -156,11 +156,11 @@ func (dn *Daemon) UpdateConfig(oldConfigName string, newConfigName string, skipC
 // required. in particular, a daemon-reload and restart for any unit files
 // touched.
 func (dn *Daemon) updateFiles(oldIgnConfig, newIgnConfig ign3types.Config, skipCertificateWrite bool) error {
-	glog.Info("Updating files")
+	klog.Info("Updating files")
 	if err := dn.writeFiles(newIgnConfig.Storage.Files, skipCertificateWrite); err != nil {
 		return err
 	}
-	if err := dn.writeUnits(newIgnConfig.Systemd.Units); err != nil {
+	if err := dn.writeAndConfigureUnits(newIgnConfig.Systemd.Units); err != nil {
 		return err
 	}
 	if err := dn.deleteStaleData(oldIgnConfig, newIgnConfig); err != nil {
@@ -169,12 +169,12 @@ func (dn *Daemon) updateFiles(oldIgnConfig, newIgnConfig ign3types.Config, skipC
 	return nil
 }
 
-func restorePath(path string) error {
-	if out, err := exec.Command("cp", "-a", "--reflink=auto", origFileName(path), path).CombinedOutput(); err != nil {
-		return fmt.Errorf("restoring %q from orig file %q: %s: %w", path, origFileName(path), string(out), err)
+func (dn *Daemon) restorePath(path string) error {
+	if out, err := exec.Command("cp", "-a", "--reflink=auto", dn.origFileName(path), path).CombinedOutput(); err != nil {
+		return fmt.Errorf("restoring %q from orig file %q: %s: %w", path, dn.origFileName(path), string(out), err)
 	}
-	if err := os.Remove(origFileName(path)); err != nil {
-		return fmt.Errorf("deleting orig file %q: %w", origFileName(path), err)
+	if err := os.Remove(dn.origFileName(path)); err != nil {
+		return fmt.Errorf("deleting orig file %q: %w", dn.origFileName(path), err)
 	}
 	return nil
 }
@@ -222,7 +222,7 @@ func (dn *Daemon) isPathInDropins(path string, systemd *ign3types.Systemd) bool 
 //
 //nolint:gocyclo
 func (dn *Daemon) deleteStaleData(oldIgnConfig, newIgnConfig ign3types.Config) error {
-	glog.Info("Deleting stale data")
+	klog.Info("Deleting stale data")
 	newFileSet := make(map[string]struct{})
 	for _, f := range newIgnConfig.Storage.Files {
 		newFileSet[f.Path] = struct{}{}
@@ -232,12 +232,12 @@ func (dn *Daemon) deleteStaleData(oldIgnConfig, newIgnConfig ign3types.Config) e
 		if _, ok := newFileSet[f.Path]; ok {
 			continue
 		}
-		if _, err := os.Stat(noOrigFileStampName(f.Path)); err == nil {
-			if delErr := os.Remove(noOrigFileStampName(f.Path)); delErr != nil {
-				return fmt.Errorf("deleting noorig file stamp %q: %w", noOrigFileStampName(f.Path), delErr)
+		if _, err := os.Stat(dn.noOrigFileStampName(f.Path)); err == nil {
+			if delErr := os.Remove(dn.noOrigFileStampName(f.Path)); delErr != nil {
+				return fmt.Errorf("deleting noorig file stamp %q: %w", dn.noOrigFileStampName(f.Path), delErr)
 			}
-			glog.V(2).Infof("Removing file %q completely", f.Path)
-		} else if _, err := os.Stat(origFileName(f.Path)); err == nil {
+			klog.V(2).Infof("Removing file %q completely", f.Path)
+		} else if _, err := os.Stat(dn.origFileName(f.Path)); err == nil {
 			// Add a check for backwards compatibility: basically if the file doesn't exist in /usr/etc (on FCOS/RHCOS)
 			// and no rpm is claiming it, we assume that the orig file came from a wrongful backup of a MachineConfig
 			// file instead of a file originally on disk. See https://bugzilla.redhat.com/show_bug.cgi?id=1814397
@@ -246,7 +246,7 @@ func (dn *Daemon) deleteStaleData(oldIgnConfig, newIgnConfig ign3types.Config) e
 				// File is owned by an rpm
 				restore = true
 			} else if strings.HasPrefix(f.Path, "/etc") && dn.os.IsCoreOSVariant() {
-				if _, err := os.Stat(withUsrPath(f.Path)); err != nil {
+				if _, err := os.Stat(dn.withUsrPath(f.Path)); err != nil {
 					if !os.IsNotExist(err) {
 						return err
 					}
@@ -258,34 +258,34 @@ func (dn *Daemon) deleteStaleData(oldIgnConfig, newIgnConfig ign3types.Config) e
 			}
 
 			if restore {
-				if err := restorePath(f.Path); err != nil {
+				if err := dn.restorePath(f.Path); err != nil {
 					return err
 				}
-				glog.V(2).Infof("Restored file %q", f.Path)
+				klog.V(2).Infof("Restored file %q", f.Path)
 				continue
 			}
 
-			if delErr := os.Remove(origFileName(f.Path)); delErr != nil {
-				return fmt.Errorf("deleting orig file %q: %w", origFileName(f.Path), delErr)
+			if delErr := os.Remove(dn.origFileName(f.Path)); delErr != nil {
+				return fmt.Errorf("deleting orig file %q: %w", dn.origFileName(f.Path), delErr)
 			}
 		}
 
 		// Check Systemd.Units.Dropins - don't remove the file if configuration has been converted into a dropin
 		if dn.isPathInDropins(f.Path, &newIgnConfig.Systemd) {
-			glog.Infof("Not removing file %q: replaced with systemd dropin", f.Path)
+			klog.Infof("Not removing file %q: replaced with systemd dropin", f.Path)
 			continue
 		}
 
-		glog.V(2).Infof("Deleting stale config file: %s", f.Path)
-		if err := os.Remove(filepath.Join(rootDirPath, f.Path)); err != nil {
+		klog.V(2).Infof("Deleting stale config file: %s", f.Path)
+		if err := os.Remove(filepath.Join(dn.rootDir, f.Path)); err != nil {
 			newErr := fmt.Errorf("unable to delete %s: %w", f.Path, err)
 			if !os.IsNotExist(err) {
 				return newErr
 			}
 			// otherwise, just warn
-			glog.Warningf("%v", newErr)
+			klog.Warningf("%v", newErr)
 		}
-		glog.Infof("Removed stale file %q", f.Path)
+		klog.Infof("Removed stale file %q", f.Path)
 	}
 
 	newUnitSet := make(map[string]struct{})
@@ -303,28 +303,28 @@ func (dn *Daemon) deleteStaleData(oldIgnConfig, newIgnConfig ign3types.Config) e
 		for j := range u.Dropins {
 			path := filepath.Join(pathSystemd, u.Name+".d", u.Dropins[j].Name)
 			if _, ok := newDropinSet[path]; !ok {
-				if _, err := os.Stat(noOrigFileStampName(path)); err == nil {
-					if delErr := os.Remove(noOrigFileStampName(path)); delErr != nil {
-						return fmt.Errorf("deleting noorig file stamp %q: %w", noOrigFileStampName(path), delErr)
+				if _, err := os.Stat(dn.noOrigFileStampName(path)); err == nil {
+					if delErr := os.Remove(dn.noOrigFileStampName(path)); delErr != nil {
+						return fmt.Errorf("deleting noorig file stamp %q: %w", dn.noOrigFileStampName(path), delErr)
 					}
-					glog.V(2).Infof("Removing file %q completely", path)
-				} else if _, err := os.Stat(origFileName(path)); err == nil {
-					if err := restorePath(path); err != nil {
+					klog.V(2).Infof("Removing file %q completely", path)
+				} else if _, err := os.Stat(dn.origFileName(path)); err == nil {
+					if err := dn.restorePath(path); err != nil {
 						return err
 					}
-					glog.V(2).Infof("Restored file %q", path)
+					klog.V(2).Infof("Restored file %q", path)
 					continue
 				}
-				glog.V(2).Infof("Deleting stale systemd dropin file: %s", path)
+				klog.V(2).Infof("Deleting stale systemd dropin file: %s", path)
 				if err := os.Remove(path); err != nil {
 					newErr := fmt.Errorf("unable to delete %s: %w", path, err)
 					if !os.IsNotExist(err) {
 						return newErr
 					}
 					// otherwise, just warn
-					glog.Warningf("%v", newErr)
+					klog.Warningf("%v", newErr)
 				}
-				glog.Infof("Removed stale systemd dropin %q", path)
+				klog.Infof("Removed stale systemd dropin %q", path)
 			}
 		}
 		path := filepath.Join(pathSystemd, u.Name)
@@ -334,30 +334,30 @@ func (dn *Daemon) deleteStaleData(oldIgnConfig, newIgnConfig ign3types.Config) e
 			// if the system has the service disabled
 			// writeUnits() will catch units that still have references in other MCs
 			if err := dn.presetUnit(u); err != nil {
-				glog.Infof("Did not restore preset for %s (may not exist): %s", u.Name, err)
+				klog.Infof("Did not restore preset for %s (may not exist): %s", u.Name, err)
 			}
-			if _, err := os.Stat(noOrigFileStampName(path)); err == nil {
-				if delErr := os.Remove(noOrigFileStampName(path)); delErr != nil {
-					return fmt.Errorf("deleting noorig file stamp %q: %w", noOrigFileStampName(path), delErr)
+			if _, err := os.Stat(dn.noOrigFileStampName(path)); err == nil {
+				if delErr := os.Remove(dn.noOrigFileStampName(path)); delErr != nil {
+					return fmt.Errorf("deleting noorig file stamp %q: %w", dn.noOrigFileStampName(path), delErr)
 				}
-				glog.V(2).Infof("Removing file %q completely", path)
-			} else if _, err := os.Stat(origFileName(path)); err == nil {
-				if err := restorePath(path); err != nil {
+				klog.V(2).Infof("Removing file %q completely", path)
+			} else if _, err := os.Stat(dn.origFileName(path)); err == nil {
+				if err := dn.restorePath(path); err != nil {
 					return err
 				}
-				glog.V(2).Infof("Restored file %q", path)
+				klog.V(2).Infof("Restored file %q", path)
 				continue
 			}
-			glog.V(2).Infof("Deleting stale systemd unit file: %s", path)
+			klog.V(2).Infof("Deleting stale systemd unit file: %s", path)
 			if err := os.Remove(path); err != nil {
 				newErr := fmt.Errorf("unable to delete %s: %w", path, err)
 				if !os.IsNotExist(err) {
 					return newErr
 				}
 				// otherwise, just warn
-				glog.Warningf("%v", newErr)
+				klog.Warningf("%v", newErr)
 			}
-			glog.Infof("Removed stale systemd unit %q", path)
+			klog.Infof("Removed stale systemd unit %q", path)
 		}
 	}
 
@@ -404,7 +404,7 @@ func (dn *Daemon) enableUnits(units []string) error {
 			return fmt.Errorf("error enabling units: %s", stdouterr)
 		}
 	}
-	glog.Infof("Enabled systemd units: %v", units)
+	klog.Infof("Enabled systemd units: %v", units)
 	return nil
 }
 
@@ -415,7 +415,7 @@ func (dn *Daemon) disableUnits(units []string) error {
 	if err != nil {
 		return fmt.Errorf("error disabling unit: %s", stdouterr)
 	}
-	glog.Infof("Disabled systemd units %v", units)
+	klog.Infof("Disabled systemd units %v", units)
 	return nil
 }
 
@@ -426,19 +426,19 @@ func (dn *Daemon) presetUnit(unit ign3types.Unit) error {
 	if err != nil {
 		return fmt.Errorf("error running preset on unit: %s", stdouterr)
 	}
-	glog.Infof("Preset systemd unit %s", unit.Name)
+	klog.Infof("Preset systemd unit %s", unit.Name)
 	return nil
 }
 
-// writeUnits writes the systemd units to disk
-func (dn *Daemon) writeUnits(units []ign3types.Unit) error {
+// writeAndConfigureUnits writes the systemd units to disk
+func (dn *Daemon) writeAndConfigureUnits(units []ign3types.Unit) error {
 	var enabledUnits []string
 	var disabledUnits []string
 
 	isCoreOSVariant := dn.os.IsCoreOSVariant()
 
 	for _, u := range units {
-		if err := writeUnit(u, pathSystemd, isCoreOSVariant); err != nil {
+		if err := dn.writeUnit(u, pathSystemd, isCoreOSVariant); err != nil {
 			return fmt.Errorf("daemon could not write systemd unit: %w", err)
 		}
 		// if the unit doesn't note if it should be enabled or disabled then
@@ -463,7 +463,7 @@ func (dn *Daemon) writeUnits(units []ign3types.Unit) error {
 		} else {
 			if err := dn.presetUnit(u); err != nil {
 				// Don't fail here, since a unit may have a dropin referencing a nonexisting actual unit
-				glog.Infof("Could not reset unit preset for %s, skipping. (Error msg: %v)", u.Name, err)
+				klog.Infof("Could not reset unit preset for %s, skipping. (Error msg: %v)", u.Name, err)
 			}
 		}
 	}
@@ -483,9 +483,9 @@ func (dn *Daemon) writeUnits(units []ign3types.Unit) error {
 
 // writeFiles writes the given files to disk.
 // it doesn't fetch remote files and expects a flattened config file.
-func (dn *Daemon) writeFiles(files []ign3types.File, skipCertificateWrite bool) error {
-	return writeFiles(files, skipCertificateWrite)
-}
+// func (dn *Daemon) writeFiles(files []ign3types.File, skipCertificateWrite bool) error {
+// 	return writeFiles(files, skipCertificateWrite)
+// }
 
 // Set a given PasswdUser's Password Hash
 func (dn *Daemon) SetPasswordHash(newUsers []ign3types.PasswdUser) error {
@@ -498,7 +498,7 @@ func (dn *Daemon) SetPasswordHash(newUsers []ign3types.PasswdUser) error {
 	// switch _, err := user.Lookup(constants.CoreUserName); {
 	// case err == nil:
 	// case errors.As(err, &uErr):
-	// 	glog.Info("core user does not exist, and creating users is not supported, so ignoring configuration specified for core user")
+	// 	klog.Info("core user does not exist, and creating users is not supported, so ignoring configuration specified for core user")
 	// 	return nil
 	// default:
 	// 	return fmt.Errorf("failed to check if user core exists: %w", err)
@@ -514,7 +514,7 @@ func (dn *Daemon) SetPasswordHash(newUsers []ign3types.PasswdUser) error {
 		if out, err := exec.Command("usermod", "-p", pwhash, u.Name).CombinedOutput(); err != nil {
 			return fmt.Errorf("Failed to change password for %s: %s:%w", u.Name, out, err)
 		}
-		glog.Info("Password has been configured")
+		klog.Info("Password has been configured")
 	}
 
 	return nil

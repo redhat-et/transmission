@@ -20,9 +20,8 @@ import (
 
 	ign3 "github.com/coreos/ignition/v2/config/v3_4"
 	ign3types "github.com/coreos/ignition/v2/config/v3_4/types"
-	"github.com/golang/glog"
 	"github.com/vincent-petithory/dataurl"
-	// 	"github.com/vincent-petithory/dataurl"
+	"k8s.io/klog/v2"
 )
 
 // // Gates whether or not the MCO uses the new format base OS container image by default
@@ -112,7 +111,7 @@ func ParseAndConvertConfig(rawIgn []byte) (ign3types.Config, error) {
 // 	out, err := decodeAndDecompressPayload(bytes.NewReader(rawIgn))
 // 	if err == nil {
 // 		// Our payload was decoded and decompressed, so parse it as Ignition.
-// 		glog.V(2).Info("ignition config was base64-decoded and gunzipped successfully")
+// 		klog.V(2).Info("ignition config was base64-decoded and gunzipped successfully")
 // 		return ParseAndConvertConfig(out)
 // 	}
 
@@ -120,18 +119,18 @@ func ParseAndConvertConfig(rawIgn []byte) (ign3types.Config, error) {
 // 	// e.g.: $ gzip -9 ign_config.json
 // 	var base64Err base64.CorruptInputError
 // 	if errors.As(err, &base64Err) {
-// 		glog.V(2).Info("ignition config was not base64 encoded, trying to gunzip ignition config")
+// 		klog.V(2).Info("ignition config was not base64 encoded, trying to gunzip ignition config")
 // 		out, err = decompressPayload(bytes.NewReader(rawIgn))
 // 		if err == nil {
 // 			// We were able to decompress our payload, so let's try parsing it
-// 			glog.V(2).Info("ignition config was gunzipped successfully")
+// 			klog.V(2).Info("ignition config was gunzipped successfully")
 // 			return ParseAndConvertConfig(out)
 // 		}
 // 	}
 
 // 	// Our Ignition config is not gzipped, so let's try to serialize the raw Ignition directly.
 // 	if errors.Is(err, errConfigNotGzipped) {
-// 		glog.V(2).Info("ignition config was not gzipped")
+// 		klog.V(2).Info("ignition config was not gzipped")
 // 		return ParseAndConvertConfig(rawIgn)
 // 	}
 
@@ -204,7 +203,7 @@ func CalculateConfigFileDiffs(oldIgnConfig, newIgnConfig *ign3types.Config) []st
 		_, ok := newFileSet[path]
 		if !ok {
 			// debug: remove
-			glog.Infof("File diff: %v was deleted", path)
+			klog.Infof("File diff: %v was deleted", path)
 			diffFileSet = append(diffFileSet, path)
 		}
 	}
@@ -214,11 +213,11 @@ func CalculateConfigFileDiffs(oldIgnConfig, newIgnConfig *ign3types.Config) []st
 		oldFile, ok := oldFileSet[path]
 		if !ok {
 			// debug: remove
-			glog.Infof("File diff: %v was added", path)
+			klog.Infof("File diff: %v was added", path)
 			diffFileSet = append(diffFileSet, path)
 		} else if !reflect.DeepEqual(oldFile, newFile) {
 			// debug: remove
-			glog.Infof("File diff: detected change to %v", newFile.Path)
+			klog.Infof("File diff: detected change to %v", newFile.Path)
 			diffFileSet = append(diffFileSet, path)
 		}
 	}
