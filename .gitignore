@@ -1,5 +1,3 @@
 .vscode/
 fakeroot/
-mockconfigserver
-transmission
-vendor/
+bin/
