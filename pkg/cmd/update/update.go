@@ -14,7 +14,7 @@ import (
 )
 
 var (
-	fetchConfigTimeout = 1 * time.Minute
+	fetchConfigTimeout = 10 * time.Minute
 )
 
 type command struct{}

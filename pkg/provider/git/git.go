@@ -12,10 +12,11 @@ import (
 	ignutil "github.com/coreos/ignition/v2/config/util"
 	ign3config "github.com/coreos/ignition/v2/config/v3_4"
 	ign3types "github.com/coreos/ignition/v2/config/v3_4/types"
-	"github.com/ghodss/yaml"
 	"github.com/redhat-et/transmission/pkg/ignition"
 	"github.com/redhat-et/transmission/pkg/jsonpath"
 	"github.com/vincent-petithory/dataurl"
+	"k8s.io/klog/v2"
+	"sigs.k8s.io/yaml"
 )
 
 type GitConfigProvider struct {
@@ -35,11 +36,16 @@ func New(stagingDir string, url string, ref string, path string) *GitConfigProvi
 }
 
 func (g *GitConfigProvider) FetchConfig(ctx context.Context, dest string) (bool, error) {
-	if getConfig(g.StagingDir, "remote.origin.url") != g.URL {
+	klog.Infof("Using Git provider to fetch config from repo %q, ref %q, path %q", g.URL, g.Ref, g.Path)
+
+	originUrl := getConfig(g.StagingDir, "remote.origin.url")
+	if originUrl != g.URL {
+		klog.Infof("Current staging repo has origin %q, removing and re-cloning", originUrl)
 		os.RemoveAll(g.StagingDir)
 	}
 
 	if !isGitRepo(g.StagingDir) {
+		klog.Infof("Cloning %q into %q", g.URL, g.StagingDir)
 		if err := clone(ctx, g.StagingDir, g.URL); err != nil {
 			return false, fmt.Errorf("failed to clone repo: %w", err)
 		}
@@ -48,12 +54,18 @@ func (g *GitConfigProvider) FetchConfig(ctx context.Context, dest string) (bool,
 		}
 	}
 
+	klog.Infof("Checking out ref %q", g.Ref)
 	if err := checkout(ctx, g.StagingDir, g.Ref); err != nil {
 		return false, fmt.Errorf("failed to checkout ref %s: %w", g.Ref, err)
 	}
 
-	if err := update(ctx, g.StagingDir); err != nil {
+	klog.Infof("Pulling changes")
+	hasUpdates, err := update(ctx, g.StagingDir)
+	if err != nil {
 		return false, fmt.Errorf("failed to update repo: %w", err)
+	}
+	if !hasUpdates {
+		return false, nil
 	}
 
 	ign := ign3types.Config{
@@ -176,11 +188,13 @@ func (g *GitConfigProvider) FetchConfig(ctx context.Context, dest string) (bool,
 		ign.Storage.Files = append(ign.Storage.Files, ignFile)
 	}
 
-	err := ignition.EmbedAllResources(&ign)
+	klog.Infof("Embedding all resources")
+	err = ignition.EmbedAllResources(&ign)
 	if err != nil {
 		return false, fmt.Errorf("failed to embed all resources: %w", err)
 	}
 
+	klog.Infof("Saving config to %q", dest)
 	return true, ignition.Save(dest, &ign)
 }
 
@@ -220,9 +234,13 @@ func checkout(ctx context.Context, repoDir string, ref string) error {
 	return err
 }
 
-func update(ctx context.Context, repoDir string) error {
-	_, err := execWithContextAndOutput(ctx, "git", "-C", repoDir, "pull")
-	return err
+func update(ctx context.Context, repoDir string) (bool, error) {
+	out, err := execWithContextAndOutput(ctx, "git", "-C", repoDir, "pull")
+	if err != nil {
+		return false, err
+	}
+	hasUpdates := !strings.Contains(string(out), "up to date")
+	return hasUpdates, err
 }
 
 // from https://github.com/openshift/machine-config-operator/blob/master/pkg/daemon/rpm-ostree.go
