@@ -28,7 +28,7 @@ func (c *command) Run() error {
 	if err != nil {
 		return err
 	}
-	if len(url) == 0 {
+	if url == nil {
 		return fmt.Errorf("transmission URL not configured, exiting")
 	}
 
@@ -52,11 +52,11 @@ func (c *command) Run() error {
 		return err
 	}
 
-	klog.Infof("checking %s for configuration update", url)
+	klog.Infof("checking %s for configuration update", url.String())
 	ctx, cancel := context.WithTimeout(context.Background(), fetchConfigTimeout)
 	defer cancel()
 
-	cfgProvider := git.New(stagingDir, url, "main", "/")
+	cfgProvider := git.New(stagingDir, *url)
 	hasUpdates, err := cfgProvider.FetchConfig(ctx, mcd.DesiredConfigSet())
 	if err != nil {
 		return err

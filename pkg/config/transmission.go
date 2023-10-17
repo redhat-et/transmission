@@ -10,21 +10,21 @@ import (
 	"github.com/redhat-et/transmission/pkg/util"
 )
 
-func GetTransmissionURL() (string, error) {
+func GetTransmissionURL() (*url.URL, error) {
 	rawURL, err := getTransmissionURL()
 	if err != nil {
-		return "", fmt.Errorf("looking up Tranmission URL: %v", err)
+		return nil, fmt.Errorf("looking up Tranmission URL: %v", err)
 	}
 	rawURL, err = renderTransmissionURL(rawURL)
 	if err != nil {
-		return "", fmt.Errorf("rendering Transmission URL: %v", err)
+		return nil, fmt.Errorf("rendering Transmission URL: %v", err)
 	}
 
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return u.String(), nil
+	return u, nil
 }
 
 func getTransmissionURL() (string, error) {

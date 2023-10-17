@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,10 +27,20 @@ type GitConfigProvider struct {
 	Path       string
 }
 
-func New(stagingDir string, url string, ref string, path string) *GitConfigProvider {
+func New(stagingDir string, repoUrl url.URL) *GitConfigProvider {
+	ref := repoUrl.Query().Get("ref")
+	if ref == "" {
+		ref = "main"
+	}
+	path := repoUrl.Query().Get("path")
+	if path == "" {
+		path = "/"
+	}
+	repoUrl.RawQuery = ""
+
 	return &GitConfigProvider{
 		StagingDir: stagingDir,
-		URL:        url,
+		URL:        repoUrl.String(),
 		Ref:        ref,
 		Path:       path,
 	}

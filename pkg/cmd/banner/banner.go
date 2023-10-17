@@ -20,8 +20,8 @@ func (c *command) Run() error {
 	}
 
 	action := "No Transmission URL configured"
-	if len(url) > 0 {
-		action = fmt.Sprintf("Using %s to configure this device\n\n", url)
+	if url != nil {
+		action = fmt.Sprintf("Using %s to configure this device\n\n", url.String())
 	}
 	return os.WriteFile("/run/transmission-banner", []byte(action), 0644)
 }
