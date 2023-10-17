@@ -1,129 +1,60 @@
 package main
 
 import (
-	"bufio"
-	"context"
-	"flag"
 	"fmt"
+	"io"
 	"os"
-	"strings"
-	"time"
 
-	"github.com/golang/glog"
-	"github.com/redhat-et/transmission/pkg/daemon"
-	"github.com/redhat-et/transmission/pkg/osinfo"
-	"github.com/redhat-et/transmission/pkg/provider/git"
-	"github.com/redhat-et/transmission/pkg/util"
+	"github.com/redhat-et/transmission/pkg/cmd/banner"
+	"github.com/redhat-et/transmission/pkg/cmd/rollback"
+	"github.com/redhat-et/transmission/pkg/cmd/update"
+	"k8s.io/klog/v2"
 )
 
-func getTransmissionUrlFromKernelCmdline() (string, error) {
-	cmdline, err := os.ReadFile("/proc/cmdline")
-	if err != nil {
-		return "", fmt.Errorf("reading /proc/cmdline failed: %w", err)
-	}
-	for _, arg := range strings.Split(string(cmdline), " ") {
-		fields := strings.Split(arg, "=")
-		if len(fields) == 2 && fields[0] == "transmission.url" {
-			return strings.TrimSpace(fields[1]), nil
-		}
-	}
-	return "", nil
+type Runner interface {
+	Run() error
 }
 
-func getTransmissionURL() (string, error) {
-	cmdlineUrl, err := getTransmissionUrlFromKernelCmdline()
-	if err != nil {
-		return "", err
+var (
+	commands = map[string]Runner{
+		"rollback":      rollback.NewCommand(),
+		"update":        update.NewCommand(),
+		"update-banner": banner.NewCommand(),
 	}
-	if cmdlineUrl != "" {
-		return cmdlineUrl, nil
-	}
-	for _, p := range []string{"/usr/lib/transmission-url", "/etc/transmission-url", "./transmission-url"} {
-		if _, err := os.Stat(p); err == nil {
-			file, err := os.Open(p)
-			if err != nil {
-				return "", err
-			}
-			defer file.Close()
-
-			scanner := bufio.NewScanner(file)
-			for scanner.Scan() {
-				return strings.TrimSpace(scanner.Text()), nil
-			}
-		}
-	}
-	return "", nil
-}
-
-func renderTransmissionURL(urlTemplate string) (string, error) {
-	urlTemplate = strings.ReplaceAll(urlTemplate, "${arch}", osinfo.GetArch())
-	urlTemplate = strings.ReplaceAll(urlTemplate, "${mac}", util.DefaultIfError(osinfo.GetDefaultMACAddress, "unknown"))
-	urlTemplate = strings.ReplaceAll(urlTemplate, "${uuid}", util.DefaultIfError(osinfo.GetMachineID, "unknown"))
-	urlTemplate = strings.ReplaceAll(urlTemplate, "${subscriptionid}", util.DefaultIfError(osinfo.GetSubscriptionID, "unknown"))
-	urlTemplate = strings.ReplaceAll(urlTemplate, "${insightsid}", util.DefaultIfError(osinfo.GetInsightsID, "unknown"))
-	return urlTemplate, nil
-}
-
-func updateBanner(url string) error {
-	action := "No Transmission URL configured"
-	if len(url) > 0 {
-		action = fmt.Sprintf("Using %s to configure this device\n\n", url)
-	}
-	return os.WriteFile("/run/transmission-banner", []byte(action), 0644)
-}
+)
 
 func main() {
-	rootDir := flag.String("rootDir", "/", "directory used as file system root by "+os.Args[0])
-	flag.Parse()
-	flag.Lookup("logtostderr").Value.Set("true")
-	defer glog.Flush()
-
-	url, err := getTransmissionURL()
-	if err != nil {
-		glog.Fatalf("looking up Tranmission URL: %w", err)
+	if len(os.Args) < 2 {
+		usage(os.Stderr, fmt.Errorf("no command specified"))
 	}
-	url, err = renderTransmissionURL(url)
-	if err != nil {
-		glog.Fatalf("rendering Transmission URL: %w", err)
+	cmd, ok := commands[os.Args[1]]
+	if !ok {
+		usage(os.Stderr, fmt.Errorf("unknown command %s", os.Args[1]))
 	}
 
-	updateBanner(url)
+	klog.Info("Starting transmission")
+	defer klog.Info("Stopping transmission")
 
-	if len(url) == 0 {
-		glog.Infoln("Transmission URL not configured, exiting")
-		os.Exit(0)
-	}
-
-	if *rootDir == "/" && os.Geteuid() != 0 {
-		glog.Errorln("Need root privileges to write to '/' (use '--rootDir=' flag to specify a fakeroot), exiting.")
+	if err := cmd.Run(); err != nil {
+		klog.Error(err.Error())
 		os.Exit(1)
 	}
+	os.Exit(0)
+}
 
-	dn, err := daemon.New(nil)
+func usage(out io.Writer, err error) {
 	if err != nil {
-		glog.Fatalln(err)
-	}
-	dn.SetRootDir(*rootDir)
-	dn.InitDirs()
-
-	glog.Infof("Running update, URL is %s", url)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
-	defer cancel()
-
-	cfgProvider := git.New(dn.GetStagingDirPath(), url, "main", "/")
-	hasUpdates, err := cfgProvider.FetchConfig(ctx, dn.GetDesiredConfigSetPath())
-	if err != nil {
-		glog.Errorln(err)
-		os.Exit(1)
-	}
-	if !hasUpdates {
-		glog.Infoln("No updates, exiting")
-		os.Exit(0)
+		fmt.Fprintf(out, "error: %v\n\n", err)
 	}
 
-	err = dn.UpdateConfig(dn.GetCurrentConfigSetPath(), dn.GetDesiredConfigSetPath(), false)
-	if err != nil {
-		glog.Errorln(err)
-	}
+	fmt.Fprintln(out, `Transmission is a device management agent for ostree-based Linux operating systems.
+
+Usage:
+	transmission [command]
+
+Available Commands:
+	rollback      roll back to previous configuration set
+	update        fetch and apply configuration set
+	update-banner update the login banner to display the configuration URL`)
+	os.Exit(1)
 }
